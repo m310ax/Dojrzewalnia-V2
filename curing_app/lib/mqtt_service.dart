@@ -11,11 +11,12 @@ class MqttService {
 
   static final MqttService _instance = MqttService._internal();
 
-  static const String defaultServer =
-      'd4a0e9aff5804eb4bb95c4032b227373.s1.eu.hivemq.cloud';
-  static const int defaultPort = 8883;
-  static const String _username = 'maiek929';
-  static const String _password = 'M#Je08hRnSK';
+  static const String _legacyServer = 'srv22.mikr.us';
+  static const int _legacyPort = 1883;
+    static const String defaultServer = 'srv22.mikr.us';
+  static const int defaultPort = 20552;
+  static const String _username = 'curing_user';
+  static const String _password = 'mocne';
   static const String _serverPrefsKey = 'mqtt_broker_server';
   static const String _portPrefsKey = 'mqtt_broker_port';
   static const String _devicePrefsKey = 'mqtt_selected_device';
@@ -33,8 +34,7 @@ class MqttService {
   MqttServerClient? _client;
   StreamSubscription<List<MqttReceivedMessage<MqttMessage>>>?
   _updatesSubscription;
-  late final String _clientIdentifier =
-      'curing-app-${DateTime.now().millisecondsSinceEpoch}';
+  static const String _clientIdentifier = 'flutter_client';
   String _selectedDevice = '';
 
   String get server => _server;
@@ -52,6 +52,19 @@ class MqttService {
     _server = prefs.getString(_serverPrefsKey) ?? defaultServer;
     _port = prefs.getInt(_portPrefsKey) ?? defaultPort;
     _selectedDevice = prefs.getString(_devicePrefsKey) ?? '';
+
+    if (_server == _legacyServer && _port == _legacyPort) {
+      _server = defaultServer;
+      _port = defaultPort;
+      await _saveSettings();
+    }
+
+    if (_server == defaultServer && _port != defaultPort) {
+      _server = defaultServer;
+      _port = defaultPort;
+      await _saveSettings();
+    }
+
     _settingsLoaded = true;
   }
 
@@ -106,10 +119,11 @@ class MqttService {
   }
 
   MqttServerClient _createClient() {
-    final client = MqttServerClient.withPort(_server, _clientIdentifier, _port);
+    final client = MqttServerClient(_server, _clientIdentifier);
     client.logging(on: false);
     client.keepAlivePeriod = 20;
-    client.secure = true;
+    client.port = _port;
+    client.secure = false;
     client.autoReconnect = true;
     client.resubscribeOnAutoReconnect = true;
     client.setProtocolV311();

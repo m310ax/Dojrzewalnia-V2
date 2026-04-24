@@ -1,12 +1,11 @@
 #include <Preferences.h>
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include "config.h"
 #include "sensors.h"
 #include "wifi_manager.h"
 
-WiFiClientSecure espClient;
+WiFiClient espClient;
 PubSubClient client(espClient);
 
 float getTargetTemp();
@@ -260,7 +259,6 @@ void reconnect() {
 
 void setupMQTT() {
   loadRanges();
-  espClient.setInsecure();
   client.setServer(MQTT_SERVER, MQTT_PORT);
   client.setCallback(callback);
 }

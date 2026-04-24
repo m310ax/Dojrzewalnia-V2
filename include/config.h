@@ -22,7 +22,7 @@
 #define WIFI_SUBNET_4 0
 
 // MQTT
-#define MQTT_PORT 8883
+#define MQTT_PORT 20552
 #define MQTT_CLIENT_ID "ESP32"
 #define MQTT_DEVICE_ID "esp1"
 
