@@ -11,7 +11,7 @@ class AuthService {
 
   static final AuthService _instance = AuthService._internal();
 
-  static const String defaultBaseUrl = 'http://srv22.mikr.us:20551';
+  static const String defaultBaseUrl = 'http://srv22.mikr.us:10551';
   static const String _tokenPrefsKey = 'auth_token';
   static const Duration _requestTimeout = Duration(seconds: 5);
 
