@@ -55,7 +55,9 @@ class _RegisterPageState extends State<RegisterPage> {
 
     if (!success) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Rejestracja nieudana')),
+        SnackBar(
+          content: Text(_auth.lastErrorMessage ?? 'Rejestracja nieudana'),
+        ),
       );
       return;
     }

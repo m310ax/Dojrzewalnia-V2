@@ -43,7 +43,9 @@ class _LoginPageState extends State<LoginPage> {
     if (!success) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('Logowanie nieudane')));
+      ).showSnackBar(
+        SnackBar(content: Text(_auth.lastErrorMessage ?? 'Logowanie nieudane')),
+      );
       return;
     }
 
