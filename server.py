@@ -173,9 +173,7 @@ def register():
         password = data.get("password")
 
         if not email or not password:
-            return jsonify({"success": False, "error": "Brak danych"}), 400
-
-        print(f"REGISTER: {email}")
+            return jsonify({"success": False, "error": "Missing data"}), 400
 
         return jsonify({"success": True}), 200
 
@@ -456,4 +454,4 @@ def evaluate_alerts():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=app.config["PORT"])
+    app.run(host="0.0.0.0", port=20551)
