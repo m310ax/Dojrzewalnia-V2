@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Panel IoT</title>
+</head>
+<body>
+  <h2>Logowanie</h2>
+  <input id="email" placeholder="email">
+  <input id="pass" type="password" placeholder="haslo">
+  <button onclick="login()">Login</button>
+
+  <h2>Urządzenia</h2>
+  <ul id="list"></ul>
+
+  <input id="did" placeholder="id">
+  <input id="dname" placeholder="nazwa">
+  <button onclick="add()">Dodaj</button>
+
+  <script>
+    let token = "";
+
+    function login() {
+      fetch('/login', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          email: email.value,
+          password: pass.value,
+        }),
+      })
+        .then((r) => r.json())
+        .then((d) => {
+          token = d.token;
+          load();
+        });
+    }
+
+    function load() {
+      fetch('/devices', {
+        headers: {'Authorization': token},
+      })
+        .then((r) => r.json())
+        .then((devs) => {
+          list.innerHTML = '';
+          devs.forEach((d) => {
+            list.innerHTML += `<li>${d.name}</li>`;
+          });
+        });
+    }
+
+    function add() {
+      fetch('/devices', {
+        method: 'POST',
+        headers: {
+          'Authorization': token,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          id: did.value,
+          name: dname.value,
+        }),
+      }).then(load);
+    }
+  </script>
+</body>
+</html>

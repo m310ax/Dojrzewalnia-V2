@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Panel</title>
+</head>
+<body>
+  <h1>ADMIN PANEL</h1>
+
+  <p>Wklej token JWT i odśwież listy.</p>
+  <input id="token" placeholder="Bearer JWT token" style="width: 420px;">
+  <button onclick="loadAll()">Odśwież</button>
+
+  <h2>Użytkownicy</h2>
+  <ul id="users"></ul>
+
+  <h2>Urządzenia</h2>
+  <ul id="devices"></ul>
+
+  <script>
+    function authHeaders() {
+      return { Authorization: 'Bearer ' + token.value };
+    }
+
+    function loadUsers() {
+      fetch('/admin/users', { headers: authHeaders() })
+        .then((r) => r.json())
+        .then((data) => {
+          users.innerHTML = '';
+          data.forEach((user) => {
+            users.innerHTML += `<li>${user.email}</li>`;
+          });
+        });
+    }
+
+    function loadDevices() {
+      fetch('/admin/devices', { headers: authHeaders() })
+        .then((r) => r.json())
+        .then((data) => {
+          devices.innerHTML = '';
+          data.forEach((device) => {
+            devices.innerHTML += `
+              <li>
+                ${device.name} (${device.id}) - ${device.owner_email || 'brak właściciela'} - MQTT: ${device.mqtt_status}
+                <button onclick="delDevice('${device.id}')">Usuń</button>
+              </li>
+            `;
+          });
+        });
+    }
+
+    function delDevice(id) {
+      fetch('/admin/devices/' + id, {
+        method: 'DELETE',
+        headers: authHeaders(),
+      }).then(loadDevices);
+    }
+
+    function loadAll() {
+      loadUsers();
+      loadDevices();
+    }
+  </script>
+</body>
+</html>

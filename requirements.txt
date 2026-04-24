@@ -1,0 +1,7 @@
+flask
+flask-bcrypt
+flask-cors
+flask-jwt-extended
+numpy
+requests
+gunicorn

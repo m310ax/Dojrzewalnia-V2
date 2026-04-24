@@ -1,0 +1,10 @@
+.git
+.pio
+.vscode
+__pycache__
+*.pyc
+*.log
+curing_app/build
+curing_app/.dart_tool
+curing_app/.flutter-plugins
+curing_app/.flutter-plugins-dependencies
