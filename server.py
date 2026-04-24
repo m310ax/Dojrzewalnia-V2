@@ -162,12 +162,12 @@ def health():
 @app.route("/register", methods=["POST"])
 def register():
     try:
-        data = request.get_json()
+        data = request.get_json(force=True)
 
         print("DATA:", data)
 
         if not data:
-            return jsonify({"success": False, "error": "Brak JSON"}), 400
+            return jsonify({"success": False, "error": "No JSON"}), 400
 
         email = data.get("email")
         password = data.get("password")
