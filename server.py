@@ -166,17 +166,22 @@ def register():
 
         print("DATA:", data)
 
+        if not data:
+            return jsonify({"success": False, "error": "Brak JSON"}), 400
+
         email = data.get("email")
         password = data.get("password")
 
         if not email or not password:
             return jsonify({"success": False, "error": "Brak danych"}), 400
 
+        print(f"REGISTER: {email}")
+
         return jsonify({"success": True}), 200
 
-    except Exception as error:
-        print("ERROR:", error)
-        return jsonify({"success": False, "error": str(error)}), 500
+    except Exception as e:
+        print("ERROR:", e)
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/login", methods=["POST"])
