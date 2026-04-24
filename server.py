@@ -161,30 +161,22 @@ def health():
 
 @app.route("/register", methods=["POST"])
 def register():
-    data = request.get_json(force=True)
-    error = validate_fields(data, ["email", "password"])
-    if error:
-        return jsonify({"error": error}), 400
-
-    email = data["email"].strip().lower()
-    password = data["password"]
-
-    if "@" not in email:
-        return jsonify({"error": "Invalid email"}), 400
-
-    if len(password) < 8:
-        return jsonify({"error": "Password must be at least 8 characters"}), 400
-
-    uid = str(uuid.uuid4())
-    hashed = bcrypt.generate_password_hash(password).decode()
-
     try:
-        c.execute("INSERT INTO users VALUES (?, ?, ?)", (uid, email, hashed))
-    except sqlite3.IntegrityError:
-        return jsonify({"error": "User already exists"}), 409
+        data = request.get_json()
 
-    conn.commit()
-    return jsonify({"status": "OK", "user_id": uid})
+        print("DATA:", data)
+
+        email = data.get("email")
+        password = data.get("password")
+
+        if not email or not password:
+            return jsonify({"success": False, "error": "Brak danych"}), 400
+
+        return jsonify({"success": True}), 200
+
+    except Exception as error:
+        print("ERROR:", error)
+        return jsonify({"success": False, "error": str(error)}), 500
 
 
 @app.route("/login", methods=["POST"])
