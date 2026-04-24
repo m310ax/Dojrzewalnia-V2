@@ -13,7 +13,7 @@ class MqttService {
 
   static const String _legacyServer = 'srv22.mikr.us';
   static const int _legacyPort = 1883;
-    static const String defaultServer = 'srv22.mikr.us';
+  static const String defaultServer = 'srv22.mikr.us';
   static const int defaultPort = 20552;
   static const String _username = 'curing_user';
   static const String _password = 'mocne';
