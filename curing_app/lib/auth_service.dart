@@ -10,7 +10,7 @@ class AuthService {
 
   static final AuthService _instance = AuthService._internal();
 
-  static const String defaultBaseUrl = 'http://192.168.68.122:5000';
+  static const String defaultBaseUrl = 'http://srv22.mikr.us:20551';
   static const String _tokenPrefsKey = 'auth_token';
 
   String? token;

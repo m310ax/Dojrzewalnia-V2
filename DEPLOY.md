@@ -1,6 +1,6 @@
 ## Deploy
 
-1. Skopiuj `.env.example` do `.env` i ustaw `JWT_SECRET_KEY` oraz `FCM_SERVER_KEY`.
+1. Skopiuj `.env.example` do `.env` i ustaw `JWT_SECRET_KEY`, `FCM_SERVER_KEY` oraz w razie potrzeby `PORT`.
 2. Umieść aktualny firmware ESP w `releases/firmware.bin`.
 3. Ustaw numer wersji OTA w `releases/version.txt` i dopasuj `OTA_FIRMWARE_VERSION` w `include/config.h` dla bieżącego buildu firmware.
 4. Uruchom `docker-compose up -d --build`.
@@ -33,3 +33,7 @@ Minimum na start:
 
 1. logi Docker: `docker-compose logs -f backend nginx`
 2. healthcheck API: `curl http://localhost/health`
+
+## Mikr.us
+
+Przy uruchamianiu bez reverse proxy backend może nasłuchiwać bezpośrednio na porcie `20551`, zgodnie z `PORT=20551`.

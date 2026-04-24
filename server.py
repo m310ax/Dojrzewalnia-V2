@@ -18,6 +18,7 @@ from ai import ai_control, check_alerts
 
 app = Flask(__name__)
 app.config["JWT_SECRET_KEY"] = os.environ.get("JWT_SECRET_KEY", "SUPER_SECRET_KEY")
+app.config["PORT"] = int(os.environ.get("PORT", "20551"))
 
 bcrypt = Bcrypt(app)
 jwt = JWTManager(app)
@@ -458,4 +459,4 @@ def evaluate_alerts():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=app.config["PORT"])
