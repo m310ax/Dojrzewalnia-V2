@@ -24,7 +24,7 @@
 // MQTT
 #define MQTT_PORT 30345
 #define MQTT_CLIENT_ID "ESP32"
-#define MQTT_DEVICE_ID "esp1"
+#define MQTT_DEVICE_ID "ESP1"
 
 // PINY
 #define RELAY_COOL 5

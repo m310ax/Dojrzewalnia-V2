@@ -12,7 +12,7 @@ void controlLogic(float temp, float hum) {
   if (!isMqttConnected()) {
     digitalWrite(RELAY_COOL, temp > 3.0F ? HIGH : LOW);
     digitalWrite(RELAY_HUM, hum < 75.0F ? HIGH : LOW);
-    digitalWrite(RELAY_FAN, HIGH);
+    digitalWrite(RELAY_FAN, isFanOverrideEnabled() && !getFanOverrideState() ? LOW : HIGH);
     return;
   }
 
@@ -28,5 +28,5 @@ void controlLogic(float temp, float hum) {
     digitalWrite(RELAY_HUM, LOW);
   }
 
-  digitalWrite(RELAY_FAN, HIGH);
+  digitalWrite(RELAY_FAN, isFanOverrideEnabled() && !getFanOverrideState() ? LOW : HIGH);
 }

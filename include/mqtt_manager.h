@@ -1,8 +1,11 @@
 #pragma once
 
+#include <Arduino.h>
+
 void setupMQTT();
 void mqttLoop();
 void publishData(float temp, float hum);
+String getDeviceId();
 float getTempMin();
 float getTempMax();
 float getHumMin();
@@ -25,4 +28,7 @@ void setHysteresis(float value);
 void setAirTime(float value);
 void setAirInterval(float value);
 void setProfile(const String& value);
+void setFanOverride(bool enabled, bool on);
+bool isFanOverrideEnabled();
+bool getFanOverrideState();
 bool isMqttConnected();

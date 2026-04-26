@@ -1,6 +1,7 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
+#include <esp_system.h>
 #include "config.h"
 #include "sensors.h"
 #include "wifi_manager.h"
@@ -21,6 +22,8 @@ constexpr float kTempUpperLimit = 25.0F;
 constexpr float kHumLowerLimit = 50.0F;
 constexpr float kHumUpperLimit = 100.0F;
 constexpr const char* kPrefsNamespace = "curing";
+constexpr const char* kDeviceIdKey = "deviceId";
+constexpr const char* kDeviceIdPrefix = "ESP-";
 
 float tempMin = 0.0F;
 float tempMax = 4.0F;
@@ -28,6 +31,18 @@ float humMin = 78.0F;
 float humMax = 82.0F;
 Preferences prefs;
 bool prefsReady = false;
+bool fanOverrideEnabled = false;
+bool fanOverrideState = true;
+String deviceId = MQTT_DEVICE_ID;
+
+String generateDeviceId() {
+  static const char charset[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  String generatedId = kDeviceIdPrefix;
+  for (int index = 0; index < 6; ++index) {
+    generatedId += charset[esp_random() % (sizeof(charset) - 1)];
+  }
+  return generatedId;
+}
 
 void normalizeTempRange(float* minValue, float* maxValue) {
   *minValue = constrain(*minValue, kTempLowerLimit, kTempUpperLimit);
@@ -87,12 +102,29 @@ void loadRanges() {
   humMax = storedHumMax;
 }
 
+void loadDeviceId() {
+  ensurePreferences();
+  if (!prefsReady) {
+    deviceId = MQTT_DEVICE_ID;
+    return;
+  }
+
+  const String storedDeviceId = prefs.getString(kDeviceIdKey, "");
+  if (storedDeviceId.length() > 0) {
+    deviceId = storedDeviceId;
+    return;
+  }
+
+  deviceId = generateDeviceId();
+  prefs.putString(kDeviceIdKey, deviceId);
+}
+
 String scopedTopic(const char* logicalTopic) {
-  return String("devices/") + MQTT_DEVICE_ID + "/" + logicalTopic;
+  return String("devices/") + deviceId + "/" + logicalTopic;
 }
 
 String logicalTopicFromScoped(const String& topic) {
-  const String prefix = String("devices/") + MQTT_DEVICE_ID + "/";
+  const String prefix = String("devices/") + deviceId + "/";
   if (!topic.startsWith(prefix)) {
     return topic;
   }
@@ -104,11 +136,77 @@ void publishRetained(const char* logicalTopic, const String& value) {
   client.publish(topic.c_str(), value.c_str(), true);
 }
 
+bool parseFanOverrideMessage(const String& rawMessage, bool* enabled, bool* state) {
+  String msg = rawMessage;
+  msg.trim();
+  msg.toLowerCase();
+
+  if (msg == "auto") {
+    *enabled = false;
+    *state = true;
+    return true;
+  }
+
+  int colonIndex = msg.indexOf(':');
+  if (msg.startsWith("{") && colonIndex >= 0) {
+    int endIndex = msg.indexOf('}', colonIndex + 1);
+    if (endIndex < 0) {
+      endIndex = msg.length();
+    }
+    msg = msg.substring(colonIndex + 1, endIndex);
+    msg.replace("\"", "");
+    msg.trim();
+  }
+
+  if (msg == "1" || msg == "true" || msg == "on" || msg == "high") {
+    *enabled = true;
+    *state = true;
+    return true;
+  }
+
+  if (msg == "0" || msg == "false" || msg == "off" || msg == "low") {
+    *enabled = true;
+    *state = false;
+    return true;
+  }
+
+  return false;
+}
+
+void publishJsonSnapshot(float temp, float hum) {
+  char payload[96];
+  snprintf(
+      payload,
+      sizeof(payload),
+      "{\"temp\": %.2f, \"hum\": %.2f}",
+      temp,
+      hum);
+  publishRetained("data", String(payload));
+}
+
+void publishAvailability() {
+  if (!client.connected()) {
+    return;
+  }
+
+  char payload[160];
+  snprintf(
+      payload,
+      sizeof(payload),
+      "{\"id\":\"%s\",\"ip\":\"%s\",\"rssi\":%d}",
+      deviceId.c_str(),
+      getLocalIp(),
+      WiFi.RSSI());
+  client.publish("devices/available", payload);
+}
+
 void publishDeviceState(float temp, float hum) {
   if (!client.connected()) {
     return;
   }
 
+  publishAvailability();
+  publishJsonSnapshot(temp, hum);
   publishRetained("curing/status", "online");
   publishRetained("curing/temp", String(temp, 1));
   publishRetained("curing/humidity", String(hum, 1));
@@ -123,6 +221,7 @@ void publishDeviceState(float temp, float hum) {
   publishRetained("curing/set/air_interval", String(getAirInterval(), 1));
   publishRetained("curing/set/profile", getProfile());
   publishRetained("curing/mode", getProfile());
+  publishRetained("curing/device/id", deviceId);
   publishRetained("curing/device/ip", String(getLocalIp()));
   publishRetained("curing/device/sensor", isSensorConnected() ? "true" : "false");
   publishRetained("curing/device/wifi", isWiFiConnected() ? "true" : "false");
@@ -210,6 +309,23 @@ void setProfile(const String& value) {
   profile = value;
 }
 
+void setFanOverride(bool enabled, bool on) {
+  fanOverrideEnabled = enabled;
+  fanOverrideState = on;
+}
+
+bool isFanOverrideEnabled() {
+  return fanOverrideEnabled;
+}
+
+bool getFanOverrideState() {
+  return fanOverrideState;
+}
+
+String getDeviceId() {
+  return deviceId;
+}
+
 void callback(char* topic, byte* payload, unsigned int length) {
   String msg;
 
@@ -219,6 +335,15 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
   String t = String(topic);
   t = logicalTopicFromScoped(t);
+
+  if (t == "control/fan") {
+    bool enabled = false;
+    bool state = true;
+    if (parseFanOverrideMessage(msg, &enabled, &state)) {
+      setFanOverride(enabled, state);
+    }
+    return;
+  }
 
   if (t == "curing/set/temp") setTargetTemp(msg.toFloat());
   if (t == "curing/set/hum") setTargetHum(msg.toFloat());
@@ -243,8 +368,9 @@ void reconnect() {
 
   lastReconnectAttempt = millis();
   const String statusTopic = scopedTopic("curing/status");
+    const String clientId = String(MQTT_CLIENT_ID) + "-" + deviceId;
   if (client.connect(
-          MQTT_CLIENT_ID,
+      clientId.c_str(),
           MQTT_USERNAME,
           MQTT_PASSWORD,
           statusTopic.c_str(),
@@ -252,13 +378,16 @@ void reconnect() {
           true,
           "offline")) {
     const String commandTopic = scopedTopic("curing/set/#");
+    const String controlTopic = scopedTopic("control/#");
     client.subscribe(commandTopic.c_str());
+    client.subscribe(controlTopic.c_str());
     client.publish(statusTopic.c_str(), "online", true);
   }
 }
 
 void setupMQTT() {
   loadRanges();
+  loadDeviceId();
   client.setServer(MQTT_SERVER, MQTT_PORT);
   client.setCallback(callback);
 }

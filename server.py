@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 import threading
@@ -85,10 +86,12 @@ MQTT_SERVER = os.environ.get("MQTT_SERVER", "srv22.mikr.us")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "20552"))
 MQTT_USERNAME = os.environ.get("MQTT_USERNAME", "curing_user")
 MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD", "mocne")
-MQTT_TOPIC = "devices/+/curing/#"
+MQTT_TOPIC = "devices/+/#"
 
 device_data = {}
 device_data_lock = threading.Lock()
+available_devices = {}
+available_devices_lock = threading.Lock()
 mqtt_client = None
 mqtt_started = False
 mqtt_start_lock = threading.Lock()
@@ -119,6 +122,8 @@ def _normalize_device_value(logical_topic, payload):
 
 def _device_field_name(logical_topic):
     field_map = {
+        "data": "data",
+        "curing/device/id": "device_runtime_id",
         "curing/temp": "temp",
         "curing/humidity": "humidity",
         "curing/status": "status",
@@ -136,20 +141,75 @@ def _device_field_name(logical_topic):
 
 
 def store_device_message(topic, payload):
+    if topic == "devices/available":
+        try:
+            data_payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return False
+
+        if not isinstance(data_payload, dict):
+            return False
+
+        device_id = str(data_payload.get("id") or "").strip()
+        if not device_id:
+            return False
+
+        with available_devices_lock:
+            available_devices[device_id] = {
+                "id": device_id,
+                "ip": data_payload.get("ip"),
+                "rssi": data_payload.get("rssi"),
+                "last_seen": time.time(),
+            }
+
+        return True
+
     parts = topic.split("/", 2)
     if len(parts) != 3 or parts[0] != "devices" or not parts[1].strip():
         return False
 
     logical_topic = parts[2]
-    if not logical_topic.startswith("curing/"):
-        return False
-
     device_id = parts[1].strip()
     with device_data_lock:
         snapshot = dict(device_data.get(device_id, {}))
-        snapshot[_device_field_name(logical_topic)] = _normalize_device_value(
-            logical_topic, payload
-        )
+
+        if logical_topic == "data":
+            try:
+                data_payload = json.loads(payload)
+            except json.JSONDecodeError:
+                return False
+
+            if not isinstance(data_payload, dict):
+                return False
+
+            if "temp" in data_payload:
+                try:
+                    snapshot["temp"] = float(data_payload["temp"])
+                except (TypeError, ValueError):
+                    snapshot["temp"] = data_payload["temp"]
+
+            hum_value = data_payload.get("hum", data_payload.get("humidity"))
+            if hum_value is not None:
+                try:
+                    normalized_hum = float(hum_value)
+                except (TypeError, ValueError):
+                    normalized_hum = hum_value
+
+                snapshot["hum"] = normalized_hum
+                snapshot["humidity"] = normalized_hum
+
+            snapshot["data"] = data_payload
+        else:
+            if not logical_topic.startswith("curing/"):
+                return False
+
+            snapshot[_device_field_name(logical_topic)] = _normalize_device_value(
+                logical_topic, payload
+            )
+
+            if logical_topic == "curing/humidity" and "hum" not in snapshot:
+                snapshot["hum"] = snapshot.get("humidity")
+
         snapshot["_last_topic"] = topic
         snapshot["_updated_at"] = int(time.time())
         device_data[device_id] = snapshot
@@ -162,13 +222,25 @@ def user_owns_device(owner_id, device_id):
     return c.fetchone() is not None
 
 
+def _connection_quality(rssi):
+    if not isinstance(rssi, (int, float)):
+        return "unknown"
+    if rssi > -60:
+        return "excellent"
+    if rssi > -70:
+        return "good"
+    if rssi > -80:
+        return "weak"
+    return "bad"
+
+
 def publish_device_command(device_id, logical_topic, value):
     start_mqtt_listener()
     client = mqtt_client
     if client is None:
         return False, "MQTT client unavailable"
 
-    if not logical_topic.startswith("curing/"):
+    if not logical_topic.startswith(("curing/", "control/")):
         return False, "Invalid control topic"
 
     scoped_topic = f"devices/{device_id}/{logical_topic}"
@@ -387,6 +459,28 @@ def get_devices():
     return jsonify([{"id": row[0], "name": row[1]} for row in rows])
 
 
+@app.route("/devices/available", methods=["GET"])
+@jwt_required()
+def get_available_devices():
+    now = time.time()
+    with available_devices_lock:
+        entries = [dict(device) for device in available_devices.values()]
+
+    entries.sort(key=lambda item: item["id"].lower())
+    return jsonify(
+        [
+            {
+                "id": entry["id"],
+                "ip": entry.get("ip"),
+                "rssi": entry.get("rssi"),
+                "quality": _connection_quality(entry.get("rssi")),
+                "online": (now - float(entry.get("last_seen") or 0)) < 15,
+            }
+            for entry in entries
+        ]
+    )
+
+
 @app.route("/devices/<device_id>", methods=["DELETE"])
 @jwt_required()
 def delete_device(device_id):
@@ -437,7 +531,14 @@ def latest_device_data():
 
     topic = snapshot.pop("_last_topic", f"devices/{device_id}/curing")
     updated_at = snapshot.pop("_updated_at", int(time.time()))
-    return jsonify({"topic": topic, "data": snapshot, "time": updated_at})
+    return jsonify(
+        {
+            "device_id": device_id,
+            "topic": topic,
+            "data": snapshot,
+            "time": updated_at,
+        }
+    )
 
 
 @app.route("/control", methods=["POST"])

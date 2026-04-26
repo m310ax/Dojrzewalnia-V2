@@ -139,6 +139,18 @@ class ApiService {
     return _decodeList(response.body, 'Nieprawidłowa lista urządzeń');
   }
 
+  Future<List<Map<String, dynamic>>> getAvailableDevices() async {
+    final response = await _send(
+      http.get(
+        Uri.parse('$baseUrl/devices/available'),
+        headers: _headers(),
+      ),
+      'GET /devices/available',
+    );
+    _ensureSuccess(response, 'Nie udało się pobrać listy wykrytych urządzeń');
+    return _decodeList(response.body, 'Nieprawidłowa lista wykrytych urządzeń');
+  }
+
   Future<void> addDevice(String id, [String? name]) async {
     final response = await _send(
       http.post(

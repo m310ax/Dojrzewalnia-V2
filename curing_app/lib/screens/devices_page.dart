@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../api_service.dart';
@@ -19,8 +21,11 @@ class _DevicesPageState extends State<DevicesPage> {
   final _mqtt = MqttService();
 
   bool _isLoading = false;
+  bool _isAvailableLoading = false;
   bool _contentVisible = false;
   List<Map<String, dynamic>> _devices = [];
+  List<Map<String, dynamic>> _availableDevices = [];
+  Timer? _availableRefreshTimer;
 
   @override
   void initState() {
@@ -31,6 +36,16 @@ class _DevicesPageState extends State<DevicesPage> {
       }
     });
     _loadDevices();
+    _loadAvailableDevices();
+    _availableRefreshTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      unawaited(_loadAvailableDevices(showError: false));
+    });
+  }
+
+  @override
+  void dispose() {
+    _availableRefreshTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadDevices() async {
@@ -51,6 +66,64 @@ class _DevicesPageState extends State<DevicesPage> {
       setState(() => _isLoading = false);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Nie udało się pobrać urządzeń')),
+      );
+    }
+  }
+
+  Future<void> _loadAvailableDevices({bool showError = true}) async {
+    if (_isAvailableLoading) {
+      return;
+    }
+
+    setState(() => _isAvailableLoading = true);
+    try {
+      final devices = await _api.getAvailableDevices();
+      if (!mounted) {
+        return;
+      }
+
+      final pairedIds = _devices
+          .map((device) => device['id']?.toString() ?? '')
+          .where((id) => id.isNotEmpty)
+          .toSet();
+
+      setState(() {
+        _availableDevices = devices
+            .where((device) => !pairedIds.contains(device['id']?.toString() ?? ''))
+            .toList();
+        _isAvailableLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() => _isAvailableLoading = false);
+      if (showError) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Nie udało się pobrać wykrytych urządzeń')),
+        );
+      }
+    }
+  }
+
+  Future<void> _addAvailableDevice(Map<String, dynamic> device) async {
+    final id = device['id']?.toString().trim() ?? '';
+    if (id.isEmpty) {
+      return;
+    }
+
+    try {
+      await _api.addDevice(id, 'Nowe ESP');
+      await _mqtt.subscribeDevice(id);
+      await _loadDevices();
+      await _loadAvailableDevices(showError: false);
+      widget.onDevicesChanged();
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Nie udało się dodać wykrytego urządzenia')),
       );
     }
   }
@@ -119,6 +192,7 @@ class _DevicesPageState extends State<DevicesPage> {
       await _api.addDevice(id, name);
       await _mqtt.subscribeDevice(id);
       await _loadDevices();
+      await _loadAvailableDevices(showError: false);
       widget.onDevicesChanged();
     } catch (_) {
       if (!mounted) {
@@ -137,6 +211,7 @@ class _DevicesPageState extends State<DevicesPage> {
         await _mqtt.subscribeDevice('');
       }
       await _loadDevices();
+      await _loadAvailableDevices(showError: false);
       widget.onDevicesChanged();
     } catch (_) {
       if (!mounted) {
@@ -195,6 +270,39 @@ class _DevicesPageState extends State<DevicesPage> {
     );
   }
 
+  Widget _availableDeviceCard(Map<String, dynamic> device) {
+    final id = device['id']?.toString() ?? 'unknown';
+    final ip = device['ip']?.toString() ?? '-';
+    final quality = device['quality']?.toString() ?? 'unknown';
+    final rssi = device['rssi'];
+    final online = device['online'] == true;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Glow(
+        color: const Color(0xFF2ED47A),
+        child: GlassCard(
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(
+              Icons.sensors,
+              color: online ? const Color(0xFF2ED47A) : Colors.white54,
+            ),
+            title: Text(id),
+            subtitle: Text(
+              'IP: $ip  RSSI: ${rssi ?? '-'}  Jakość: $quality',
+              style: const TextStyle(color: Colors.white60),
+            ),
+            trailing: FilledButton(
+              onPressed: () => _addAvailableDevice(device),
+              child: const Text('Dodaj'),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -242,12 +350,28 @@ class _DevicesPageState extends State<DevicesPage> {
                         ),
                       ),
                       IconButton(
-                        onPressed: _isLoading ? null : _loadDevices,
+                        onPressed: _isLoading
+                            ? null
+                            : () async {
+                                await _loadDevices();
+                                await _loadAvailableDevices(showError: false);
+                              },
                         icon: const Icon(Icons.refresh),
                       ),
                     ],
                   ),
                 ),
+                const SizedBox(height: 16),
+                Text(
+                  'Wykryte ESP',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 8),
+                if (_availableDevices.isEmpty && !_isAvailableLoading)
+                  const GlassCard(
+                    child: Text('Brak nowych urządzeń w sieci MQTT.'),
+                  )
+                else ..._availableDevices.map(_availableDeviceCard),
                 const SizedBox(height: 16),
                 if (_devices.isEmpty && !_isLoading)
                   const GlassCard(
