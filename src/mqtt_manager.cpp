@@ -31,6 +31,8 @@ float humMin = 78.0F;
 float humMax = 82.0F;
 Preferences prefs;
 bool prefsReady = false;
+bool coolOverrideEnabled = false;
+bool coolOverrideState = false;
 bool fanOverrideEnabled = false;
 bool fanOverrideState = true;
 String deviceId = MQTT_DEVICE_ID;
@@ -136,7 +138,7 @@ void publishRetained(const char* logicalTopic, const String& value) {
   client.publish(topic.c_str(), value.c_str(), true);
 }
 
-bool parseFanOverrideMessage(const String& rawMessage, bool* enabled, bool* state) {
+bool parseSwitchOverrideMessage(const String& rawMessage, bool* enabled, bool* state) {
   String msg = rawMessage;
   msg.trim();
   msg.toLowerCase();
@@ -309,6 +311,19 @@ void setProfile(const String& value) {
   profile = value;
 }
 
+void setCoolOverride(bool enabled, bool on) {
+  coolOverrideEnabled = enabled;
+  coolOverrideState = on;
+}
+
+bool isCoolOverrideEnabled() {
+  return coolOverrideEnabled;
+}
+
+bool getCoolOverrideState() {
+  return coolOverrideState;
+}
+
 void setFanOverride(bool enabled, bool on) {
   fanOverrideEnabled = enabled;
   fanOverrideState = on;
@@ -336,10 +351,19 @@ void callback(char* topic, byte* payload, unsigned int length) {
   String t = String(topic);
   t = logicalTopicFromScoped(t);
 
+  if (t == "control/cool") {
+    bool enabled = false;
+    bool state = false;
+    if (parseSwitchOverrideMessage(msg, &enabled, &state)) {
+      setCoolOverride(enabled, state);
+    }
+    return;
+  }
+
   if (t == "control/fan") {
     bool enabled = false;
     bool state = true;
-    if (parseFanOverrideMessage(msg, &enabled, &state)) {
+    if (parseSwitchOverrideMessage(msg, &enabled, &state)) {
       setFanOverride(enabled, state);
     }
     return;

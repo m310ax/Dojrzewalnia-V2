@@ -74,6 +74,30 @@ CREATE TABLE IF NOT EXISTS telemetry_history (
 """
 )
 
+c.execute(
+    """
+CREATE TABLE IF NOT EXISTS pid_modes (
+ device_id TEXT PRIMARY KEY,
+ owner_id TEXT NOT NULL,
+ mode TEXT NOT NULL,
+ target_temp REAL,
+ updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+"""
+)
+
+c.execute(
+    """
+CREATE TABLE IF NOT EXISTS pid_state (
+ device_id TEXT PRIMARY KEY,
+ integral REAL NOT NULL DEFAULT 0,
+ last_error REAL NOT NULL DEFAULT 0,
+ last_output REAL NOT NULL DEFAULT 0,
+ updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+"""
+)
+
 conn.commit()
 
 scenes = {
@@ -232,6 +256,104 @@ def _connection_quality(rssi):
     if rssi > -80:
         return "weak"
     return "bad"
+
+
+def _clamp(value, minimum, maximum):
+    return max(minimum, min(maximum, value))
+
+
+def get_device_mode(device_id):
+    c.execute(
+        "SELECT mode, target_temp FROM pid_modes WHERE device_id=?",
+        (device_id,),
+    )
+    row = c.fetchone()
+    if row is None:
+        return {"mode": "manual", "target_temp": None}
+    return {"mode": row[0], "target_temp": row[1]}
+
+
+def clear_pid_state(device_id):
+    c.execute("DELETE FROM pid_state WHERE device_id=?", (device_id,))
+    conn.commit()
+
+
+def release_pid_overrides(device_id):
+    cool_ok, cool_result = publish_device_command(device_id, "control/cool", "auto")
+    if not cool_ok:
+        return False, cool_result
+
+    fan_ok, fan_result = publish_device_command(device_id, "control/fan", "auto")
+    if not fan_ok:
+        return False, fan_result
+
+    return True, "released"
+
+
+def run_pid_control(device_id, target_temp):
+    c.execute(
+        "SELECT temp FROM telemetry_history WHERE device_id=? ORDER BY id DESC LIMIT 8",
+        (device_id,),
+    )
+    rows = list(reversed(c.fetchall()))
+    if len(rows) < 5:
+        return {"status": "skipped", "reason": "not_enough_history"}
+
+    current_temp = float(rows[-1][0])
+    c.execute(
+        "SELECT integral, last_error FROM pid_state WHERE device_id=?",
+        (device_id,),
+    )
+    previous_state = c.fetchone()
+
+    kp = 2.0
+    ki = 0.1
+    kd = 1.0
+    threshold = 0.35
+
+    error = current_temp - float(target_temp)
+    integral = _clamp((previous_state[0] if previous_state else 0.0) + error, -100.0, 100.0)
+    last_error = previous_state[1] if previous_state else 0.0
+    derivative = error - last_error
+    output = kp * error + ki * integral + kd * derivative
+
+    cool_on = output > threshold
+    fan_on = output > (threshold * 0.5)
+
+    cool_ok, cool_result = publish_device_command(
+        device_id,
+        "control/cool",
+        1 if cool_on else 0,
+    )
+    if not cool_ok:
+        return {"status": "error", "reason": cool_result}
+
+    fan_ok, fan_result = publish_device_command(
+        device_id,
+        "control/fan",
+        1 if fan_on else 0,
+    )
+    if not fan_ok:
+        return {"status": "error", "reason": fan_result}
+
+    c.execute(
+        """
+        INSERT OR REPLACE INTO pid_state (device_id, integral, last_error, last_output, updated_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """,
+        (device_id, integral, error, output),
+    )
+    conn.commit()
+
+    return {
+        "status": "ok",
+        "device_id": device_id,
+        "current_temp": round(current_temp, 2),
+        "target_temp": round(float(target_temp), 2),
+        "output": round(output, 3),
+        "cool": cool_on,
+        "fan": fan_on,
+    }
 
 
 def publish_device_command(device_id, logical_topic, value):
@@ -490,6 +612,73 @@ def delete_device(device_id):
     return jsonify({"status": "OK"})
 
 
+@app.route("/mode", methods=["GET"])
+@jwt_required()
+def get_mode():
+    uid = get_jwt_identity()
+    device_id = (request.args.get("device_id") or "").strip()
+    if not device_id:
+        return jsonify({"error": "device_id query parameter is required"}), 400
+
+    if not user_owns_device(uid, device_id):
+        return jsonify({"error": "Nie znaleziono urządzenia"}), 404
+
+    mode = get_device_mode(device_id)
+    return jsonify({"device_id": device_id, **mode})
+
+
+@app.route("/mode", methods=["POST"])
+@jwt_required()
+def set_mode():
+    uid = get_jwt_identity()
+    data = request.get_json(force=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid JSON payload"}), 400
+
+    device_id = str(data.get("device_id") or "").strip()
+    mode = str(data.get("mode") or "").strip().lower()
+    if not device_id or mode not in {"auto", "manual"}:
+        return jsonify({"error": "device_id and mode are required"}), 400
+
+    if not user_owns_device(uid, device_id):
+        return jsonify({"error": "Nie znaleziono urządzenia"}), 404
+
+    target_temp = data.get("target_temp")
+    if mode == "auto":
+        if not isinstance(target_temp, (int, float)):
+            return jsonify({"error": "target_temp must be numeric in auto mode"}), 400
+        target_temp = _clamp(float(target_temp), 0.0, 25.0)
+    else:
+        target_temp = None
+
+    c.execute(
+        """
+        INSERT OR REPLACE INTO pid_modes (device_id, owner_id, mode, target_temp, updated_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """,
+        (device_id, uid, mode, target_temp),
+    )
+    conn.commit()
+
+    if mode == "manual":
+        clear_pid_state(device_id)
+        released, details = release_pid_overrides(device_id)
+        if not released:
+            return jsonify({"error": details}), 503
+        return jsonify({"status": "OK", "device_id": device_id, "mode": mode})
+
+    pid_result = run_pid_control(device_id, target_temp)
+    return jsonify(
+        {
+            "status": "OK",
+            "device_id": device_id,
+            "mode": mode,
+            "target_temp": target_temp,
+            "pid": pid_result,
+        }
+    )
+
+
 @app.route("/device_data", methods=["POST"])
 @jwt_required()
 def get_device_data_snapshot():
@@ -570,6 +759,32 @@ def control_device():
         return jsonify({"error": details}), 503
 
     return jsonify({"success": True, "topic": details})
+
+
+@app.route("/auto/run", methods=["POST"])
+def run_auto_pid():
+    c.execute(
+        "SELECT device_id, target_temp FROM pid_modes WHERE mode='auto' ORDER BY device_id"
+    )
+    rows = c.fetchall()
+    results = []
+
+    for device_id, target_temp in rows:
+        if target_temp is None:
+            results.append(
+                {"device_id": device_id, "status": "skipped", "reason": "missing_target"}
+            )
+            continue
+
+        results.append(run_pid_control(device_id, float(target_temp)))
+
+    return jsonify(
+        {
+            "success": True,
+            "processed": len(rows),
+            "results": results,
+        }
+    )
 
 
 @app.route("/admin/users", methods=["GET"])

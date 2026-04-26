@@ -43,6 +43,8 @@ class _HomePageState extends State<HomePage>
   bool isConnecting = false;
   bool isConnected = false;
   bool isLoadingDevices = false;
+  bool _pidAutoEnabled = false;
+  bool _isPidModeLoading = false;
   bool _contentVisible = false;
   List<Map<String, dynamic>> devices = [];
   String selectedDevice = '';
@@ -437,6 +439,7 @@ class _HomePageState extends State<HomePage>
       await mqtt.subscribeDevice(selectedDevice);
       await _loadHistory();
       await _refreshBackendDeviceData();
+      await _loadPidMode();
 
       setState(() {
         isLoadingDevices = false;
@@ -483,7 +486,74 @@ class _HomePageState extends State<HomePage>
     _humidityAlertTriggered = false;
     await _loadHistory();
     await _refreshBackendDeviceData();
+    await _loadPidMode();
     await _syncHomeWidget();
+  }
+
+  Future<void> _loadPidMode() async {
+    if (selectedDevice.isEmpty) {
+      return;
+    }
+
+    try {
+      final response = await api.getPidMode(deviceId: selectedDevice);
+      if (!mounted) {
+        return;
+      }
+
+      final nextMode = (response['mode']?.toString() ?? 'manual').toLowerCase();
+      final targetValue = response['target_temp'];
+      final targetTemp = targetValue is num ? targetValue.toDouble() : null;
+
+      setState(() {
+        _pidAutoEnabled = nextMode == 'auto';
+        if (targetTemp != null) {
+          final nextEnd = targetTemp.clamp(tempRange.start, 25.0);
+          tempRange = RangeValues(tempRange.start, nextEnd);
+        }
+      });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() => _pidAutoEnabled = false);
+    }
+  }
+
+  Future<void> _setPidMode(bool enabled) async {
+    if (selectedDevice.isEmpty || _isPidModeLoading) {
+      return;
+    }
+
+    setState(() => _isPidModeLoading = true);
+    try {
+      await api.setPidMode(
+        deviceId: selectedDevice,
+        mode: enabled ? 'auto' : 'manual',
+        targetTemp: enabled ? tempRange.end : null,
+      );
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _pidAutoEnabled = enabled;
+        aiText = enabled
+            ? 'PID AUTO aktywny: ${tempRange.end.toStringAsFixed(1)}°C'
+            : 'Tryb manualny aktywny';
+      });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Nie udało się przełączyć trybu PID')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isPidModeLoading = false);
+      }
+    }
   }
 
   void _updateTargetTemp(double value) {
@@ -492,6 +562,18 @@ class _HomePageState extends State<HomePage>
       tempRange = RangeValues(tempRange.start, newEnd);
       _updateAiStatus();
     });
+
+    if (_pidAutoEnabled) {
+      unawaited(
+        api.setPidMode(
+          deviceId: selectedDevice,
+          mode: 'auto',
+          targetTemp: value,
+        ),
+      );
+      return;
+    }
+
     unawaited(
       api.sendControlCommand(
         deviceId: selectedDevice,
@@ -841,6 +923,35 @@ class _HomePageState extends State<HomePage>
                           context,
                         ).textTheme.bodySmall?.copyWith(color: Colors.white60),
                       ),
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 10,
+                        children: [
+                          ChoiceChip(
+                            label: const Text('Manual'),
+                            selected: !_pidAutoEnabled,
+                            onSelected: _isPidModeLoading
+                                ? null
+                                : (selected) {
+                                    if (selected) {
+                                      unawaited(_setPidMode(false));
+                                    }
+                                  },
+                          ),
+                          ChoiceChip(
+                            label: const Text('PID AUTO'),
+                            selected: _pidAutoEnabled,
+                            onSelected: _isPidModeLoading
+                                ? null
+                                : (selected) {
+                                    if (selected) {
+                                      unawaited(_setPidMode(true));
+                                    }
+                                  },
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
                       ControlSlider(
                         label: 'Temperatura maksymalna',
                         value: tempRange.end,

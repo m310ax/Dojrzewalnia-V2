@@ -10,16 +10,22 @@ void initRelays() {
 
 void controlLogic(float temp, float hum) {
   if (!isMqttConnected()) {
-    digitalWrite(RELAY_COOL, temp > 3.0F ? HIGH : LOW);
+    digitalWrite(
+        RELAY_COOL,
+        isCoolOverrideEnabled() ? (getCoolOverrideState() ? HIGH : LOW) : (temp > 3.0F ? HIGH : LOW));
     digitalWrite(RELAY_HUM, hum < 75.0F ? HIGH : LOW);
     digitalWrite(RELAY_FAN, isFanOverrideEnabled() && !getFanOverrideState() ? LOW : HIGH);
     return;
   }
 
-  if (temp > getTempMax()) {
-    digitalWrite(RELAY_COOL, HIGH);
-  } else if (temp < getTempMin()) {
-    digitalWrite(RELAY_COOL, LOW);
+  if (isCoolOverrideEnabled()) {
+    digitalWrite(RELAY_COOL, getCoolOverrideState() ? HIGH : LOW);
+  } else {
+    if (temp > getTempMax()) {
+      digitalWrite(RELAY_COOL, HIGH);
+    } else if (temp < getTempMin()) {
+      digitalWrite(RELAY_COOL, LOW);
+    }
   }
 
   if (hum < getHumMin()) {

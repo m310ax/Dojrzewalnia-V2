@@ -229,6 +229,43 @@ class ApiService {
     _ensureSuccess(response, 'Nie udało się wysłać komendy do urządzenia');
   }
 
+  Future<Map<String, dynamic>> getPidMode({required String deviceId}) async {
+    final response = await _send(
+      http.get(
+        Uri.parse('$baseUrl/mode?device_id=$deviceId'),
+        headers: _headers(),
+      ),
+      'GET /mode',
+    );
+    _ensureSuccess(response, 'Nie udało się pobrać trybu PID');
+    return _decodeMap(response.body, 'Nieprawidłowa odpowiedź trybu PID');
+  }
+
+  Future<Map<String, dynamic>> setPidMode({
+    required String deviceId,
+    required String mode,
+    double? targetTemp,
+  }) async {
+    final payload = <String, dynamic>{
+      'device_id': deviceId,
+      'mode': mode,
+    };
+    if (targetTemp != null) {
+      payload['target_temp'] = targetTemp;
+    }
+
+    final response = await _send(
+      http.post(
+        Uri.parse('$baseUrl/mode'),
+        headers: _headers(includeJson: true),
+        body: jsonEncode(payload),
+      ),
+      'POST /mode',
+    );
+    _ensureSuccess(response, 'Nie udało się zapisać trybu PID');
+    return _decodeMap(response.body, 'Nieprawidłowa odpowiedź trybu PID');
+  }
+
   Future<double> getAiRecommendation({
     required String deviceId,
     required List<double> tempHistory,
