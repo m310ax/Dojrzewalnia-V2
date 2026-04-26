@@ -3,5 +3,6 @@ flask-bcrypt
 flask-cors
 flask-jwt-extended
 numpy
+paho-mqtt
 requests
 gunicorn

@@ -177,6 +177,43 @@ class ApiService {
     _ensureSuccess(response, 'Nie udało się zapisać tokenu FCM');
   }
 
+  Future<Map<String, dynamic>> getDeviceData({required String deviceId}) async {
+    final response = await _send(
+      http.post(
+        Uri.parse('$baseUrl/device_data'),
+        headers: _headers(includeJson: true),
+        body: jsonEncode({'device_id': deviceId}),
+      ),
+      'POST /device_data',
+    );
+    _ensureSuccess(response, 'Nie udało się pobrać danych urządzenia');
+    final decoded = _decodeMap(
+      response.body,
+      'Nieprawidłowa odpowiedź danych urządzenia',
+    );
+    return Map<String, dynamic>.from(decoded['data'] as Map);
+  }
+
+  Future<void> sendControlCommand({
+    required String deviceId,
+    required String topic,
+    required Object value,
+  }) async {
+    final response = await _send(
+      http.post(
+        Uri.parse('$baseUrl/control'),
+        headers: _headers(includeJson: true),
+        body: jsonEncode({
+          'device_id': deviceId,
+          'topic': topic,
+          'value': value,
+        }),
+      ),
+      'POST /control',
+    );
+    _ensureSuccess(response, 'Nie udało się wysłać komendy do urządzenia');
+  }
+
   Future<double> getAiRecommendation({
     required String deviceId,
     required List<double> tempHistory,

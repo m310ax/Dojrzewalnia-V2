@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../api_service.dart';
 import '../mqtt_service.dart';
 import '../widgets/glass_card.dart';
 
@@ -13,6 +14,7 @@ class SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<SettingsPage> {
+  final api = ApiService();
   final mqtt = MqttService();
   late final TextEditingController hostController;
   late final TextEditingController portController;
@@ -43,22 +45,43 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> send() async {
-    final connected = mqtt.isConnected || await mqtt.connect();
-
-    if (!mounted) {
-      return;
-    }
-
-    if (!connected) {
+    final deviceId = mqtt.selectedDevice.trim();
+    if (deviceId.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Brak połączenia z kontrolerem')),
+        const SnackBar(content: Text('Najpierw wybierz urządzenie')),
       );
       return;
     }
 
-    mqtt.send('curing/set/air_time', airTime.toString());
-    mqtt.send('curing/set/air_interval', airInterval.toString());
-    mqtt.send('curing/set/profile', profile);
+    try {
+      await api.sendControlCommand(
+        deviceId: deviceId,
+        topic: 'curing/set/air_time',
+        value: airTime.toStringAsFixed(0),
+      );
+      await api.sendControlCommand(
+        deviceId: deviceId,
+        topic: 'curing/set/air_interval',
+        value: airInterval.toStringAsFixed(0),
+      );
+      await api.sendControlCommand(
+        deviceId: deviceId,
+        topic: 'curing/set/profile',
+        value: profile,
+      );
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Nie udało się wysłać ustawień do urządzenia')),
+      );
+      return;
+    }
+
+    if (!mounted) {
+      return;
+    }
 
     ScaffoldMessenger.of(
       context,

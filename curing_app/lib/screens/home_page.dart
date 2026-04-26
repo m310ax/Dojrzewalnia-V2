@@ -55,7 +55,9 @@ class _HomePageState extends State<HomePage>
   StreamSubscription<bool>? _statusSubscription;
   Timer? _aiDebounce;
   Timer? _telemetryDebounce;
+  Timer? _backendPollTimer;
   bool _isAiUpdating = false;
+  bool _isDeviceDataLoading = false;
   bool _humidityAlertTriggered = false;
   bool _isHistoryLoading = false;
   late final AnimationController _pulse;
@@ -112,6 +114,9 @@ class _HomePageState extends State<HomePage>
       setState(() => deviceOnline = online);
       unawaited(_syncHomeWidget());
     });
+    _backendPollTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      unawaited(_refreshBackendDeviceData());
+    });
     _initialize();
   }
 
@@ -133,6 +138,7 @@ class _HomePageState extends State<HomePage>
   @override
   void dispose() {
     _aiDebounce?.cancel();
+    _backendPollTimer?.cancel();
     _telemetryDebounce?.cancel();
     unawaited(_tempSubscription?.cancel());
     unawaited(_humSubscription?.cancel());
@@ -219,6 +225,62 @@ class _HomePageState extends State<HomePage>
     }
   }
 
+  double? _doubleValue(dynamic value) {
+    if (value is num) {
+      return value.toDouble();
+    }
+    if (value is String) {
+      return double.tryParse(value);
+    }
+    return null;
+  }
+
+  Future<void> _refreshBackendDeviceData() async {
+    if (selectedDevice.isEmpty || _isDeviceDataLoading) {
+      return;
+    }
+
+    _isDeviceDataLoading = true;
+    try {
+      final snapshot = await api.getDeviceData(deviceId: selectedDevice);
+      if (!mounted) {
+        return;
+      }
+
+      final nextTemp = _doubleValue(snapshot['temp']);
+      final nextHum = _doubleValue(snapshot['humidity']);
+      final nextStatus = snapshot['status']?.toString();
+
+      setState(() {
+        if (nextTemp != null) {
+          temp = nextTemp;
+        }
+        if (nextHum != null) {
+          hum = nextHum;
+        }
+        if (snapshot['device_ip'] != null) {
+          deviceIp = snapshot['device_ip'].toString();
+        }
+        if (snapshot['sensor'] != null) {
+          sensorConnected = snapshot['sensor'].toString() == 'true';
+        }
+        if (snapshot['wifi'] != null) {
+          wifiConnected = snapshot['wifi'].toString() == 'true';
+        }
+        if (nextStatus != null) {
+          deviceOnline = nextStatus == 'online';
+        }
+        _updateAiStatus();
+      });
+
+      await _syncHomeWidget();
+    } catch (_) {
+      // Backend live snapshot is optional and should not break direct MQTT flow.
+    } finally {
+      _isDeviceDataLoading = false;
+    }
+  }
+
   void _scheduleAiRefresh() {
     if (selectedDevice.isEmpty || tempData.length < 5 || humData.length < 5) {
       return;
@@ -258,7 +320,11 @@ class _HomePageState extends State<HomePage>
         aiText = 'AI koryguje do ${clamped.toStringAsFixed(1)}°C';
       });
 
-      mqtt.send('curing/set/temp_max', clamped.toStringAsFixed(1));
+      await api.sendControlCommand(
+        deviceId: selectedDevice,
+        topic: 'curing/set/temp_max',
+        value: clamped.toStringAsFixed(1),
+      );
     } catch (_) {
       if (!mounted) {
         return;
@@ -323,10 +389,6 @@ class _HomePageState extends State<HomePage>
         );
         aiText = 'Scena ${response['scene']} aktywna';
       });
-
-      mqtt.send('curing/set/temp_max', sceneTemp.toStringAsFixed(1));
-      mqtt.send('curing/set/hum_max', sceneHum.toStringAsFixed(0));
-      mqtt.send('curing/set/scene', scene);
     } catch (_) {
       if (!mounted) {
         return;
@@ -372,6 +434,7 @@ class _HomePageState extends State<HomePage>
       devices = loadedDevices;
       await mqtt.subscribeDevice(selectedDevice);
       await _loadHistory();
+      await _refreshBackendDeviceData();
 
       setState(() {
         isLoadingDevices = false;
@@ -417,6 +480,7 @@ class _HomePageState extends State<HomePage>
     });
     _humidityAlertTriggered = false;
     await _loadHistory();
+    await _refreshBackendDeviceData();
     await _syncHomeWidget();
   }
 
@@ -426,7 +490,13 @@ class _HomePageState extends State<HomePage>
       tempRange = RangeValues(tempRange.start, newEnd);
       _updateAiStatus();
     });
-    mqtt.send('curing/set/temp_max', value.toStringAsFixed(1));
+    unawaited(
+      api.sendControlCommand(
+        deviceId: selectedDevice,
+        topic: 'curing/set/temp_max',
+        value: value.toStringAsFixed(1),
+      ),
+    );
   }
 
   void _updateTargetHum(double value) {
@@ -435,7 +505,13 @@ class _HomePageState extends State<HomePage>
       humRange = RangeValues(humRange.start, newEnd);
       _updateAiStatus();
     });
-    mqtt.send('curing/set/hum_max', value.toStringAsFixed(0));
+    unawaited(
+      api.sendControlCommand(
+        deviceId: selectedDevice,
+        topic: 'curing/set/hum_max',
+        value: value.toStringAsFixed(0),
+      ),
+    );
   }
 
   Future<void> _connect() async {

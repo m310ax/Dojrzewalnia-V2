@@ -81,7 +81,7 @@ class _LoginPageState extends State<LoginPage> {
   String? _errorHint(AuthFailureReason? reason) {
     switch (reason) {
       case AuthFailureReason.timeout:
-        return 'Sprawdź, czy serwer działa i czy port 40222 jest osiągalny.';
+        return 'Sprawdź, czy serwer działa i czy port 20022 jest osiągalny.';
       case AuthFailureReason.connection:
         return 'Aplikacja nie mogła połączyć się z adresem API.';
       case AuthFailureReason.htmlResponse:
