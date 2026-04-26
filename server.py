@@ -19,6 +19,7 @@ from ai import ai_control, check_alerts
 app = Flask(__name__)
 app.config["JWT_SECRET_KEY"] = os.environ.get("JWT_SECRET_KEY", "SUPER_SECRET_KEY")
 app.config["PORT"] = int(os.environ.get("PORT", "20551"))
+USERS_FILE = "/root/curing-system/data/users.json"
 
 bcrypt = Bcrypt(app)
 jwt = JWTManager(app)
@@ -161,25 +162,25 @@ def health():
 
 @app.route("/register", methods=["POST"])
 def register():
-    try:
-        data = request.get_json(force=True)
+    data = request.get_json(force=True)
+    error = validate_fields(data, ["email", "password"])
+    if error:
+        return jsonify({"error": error}), 400
 
-        print("DATA:", data)
+    email = data["email"].strip().lower()
+    password = data["password"]
 
-        if not data:
-            return jsonify({"success": False, "error": "No JSON"}), 400
+    c.execute("SELECT 1 FROM users WHERE email=?", (email,))
+    if c.fetchone() is not None:
+        return jsonify({"error": "Użytkownik już istnieje"}), 409
 
-        email = data.get("email")
-        password = data.get("password")
-
-        if not email or not password:
-            return jsonify({"success": False, "error": "Missing data"}), 400
-
-        return jsonify({"success": True}), 200
-
-    except Exception as e:
-        print("ERROR:", e)
-        return jsonify({"success": False, "error": str(e)}), 500
+    password_hash = bcrypt.generate_password_hash(password).decode("utf-8")
+    c.execute(
+        "INSERT INTO users (id, email, password) VALUES (?, ?, ?)",
+        (str(uuid.uuid4()), email, password_hash),
+    )
+    conn.commit()
+    return jsonify({"success": True}), 200
 
 
 @app.route("/login", methods=["POST"])

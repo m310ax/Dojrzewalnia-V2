@@ -1,16 +1,116 @@
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import 'auth_service.dart';
+
+class ApiException implements Exception {
+  ApiException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
 
 class ApiService {
   ApiService({this.baseUrl = defaultBaseUrl});
 
   static const String defaultBaseUrl = AuthService.defaultBaseUrl;
+  static const Duration _requestTimeout = Duration(seconds: 5);
 
   final String baseUrl;
   final AuthService _auth = AuthService();
+
+  Future<http.Response> _send(
+    Future<http.Response> request,
+    String operation,
+  ) async {
+    try {
+      final response = await request.timeout(_requestTimeout);
+      debugPrint('API $operation status: ${response.statusCode}');
+      debugPrint('API $operation body: ${response.body}');
+      return response;
+    } on TimeoutException catch (error) {
+      debugPrint('API $operation timeout: $error');
+      throw ApiException('Serwer nie odpowiedział na czas');
+    } on Exception catch (error) {
+      debugPrint('API $operation error: $error');
+      throw ApiException('Brak połączenia z serwerem');
+    }
+  }
+
+  String? _extractErrorMessage(String body) {
+    try {
+      final payload = jsonDecode(body);
+      if (payload is Map<String, dynamic>) {
+        final error = payload['error'] ?? payload['message'];
+        if (error is String && error.isNotEmpty) {
+          return error;
+        }
+      }
+    } on FormatException {
+      return null;
+    }
+
+    return null;
+  }
+
+  void _ensureSuccess(http.Response response, String fallbackMessage) {
+    if (response.statusCode == 200) {
+      return;
+    }
+
+    final body = response.body.trimLeft();
+    if (body.startsWith('<')) {
+      throw ApiException('Serwer zwrócił HTML zamiast odpowiedzi API');
+    }
+
+    throw ApiException(
+      _extractErrorMessage(response.body) ??
+          '$fallbackMessage (${response.statusCode})',
+    );
+  }
+
+  Map<String, dynamic> _decodeMap(String body, String fallbackMessage) {
+    final trimmed = body.trimLeft();
+    if (trimmed.startsWith('<')) {
+      throw ApiException('Serwer zwrócił HTML zamiast odpowiedzi API');
+    }
+
+    try {
+      final payload = jsonDecode(body);
+      if (payload is Map<String, dynamic>) {
+        return payload;
+      }
+    } on FormatException {
+      throw ApiException('Serwer zwrócił nieprawidłowy JSON');
+    }
+
+    throw ApiException(fallbackMessage);
+  }
+
+  List<Map<String, dynamic>> _decodeList(String body, String fallbackMessage) {
+    final trimmed = body.trimLeft();
+    if (trimmed.startsWith('<')) {
+      throw ApiException('Serwer zwrócił HTML zamiast odpowiedzi API');
+    }
+
+    try {
+      final payload = jsonDecode(body);
+      if (payload is List<dynamic>) {
+        return payload
+            .map((item) => Map<String, dynamic>.from(item as Map))
+            .toList();
+      }
+    } on FormatException {
+      throw ApiException('Serwer zwrócił nieprawidłowy JSON');
+    }
+
+    throw ApiException(fallbackMessage);
+  }
 
   Map<String, String> _headers({bool includeJson = false}) {
     final token = _auth.token;
@@ -28,52 +128,50 @@ class ApiService {
   }
 
   Future<List<Map<String, dynamic>>> getDevices() async {
-    final response = await http.get(
-      Uri.parse('$baseUrl/devices'),
-      headers: _headers(),
+    final response = await _send(
+      http.get(
+        Uri.parse('$baseUrl/devices'),
+        headers: _headers(),
+      ),
+      'GET /devices',
     );
-
-    if (response.statusCode != 200) {
-      throw Exception('Nie udało się pobrać urządzeń');
-    }
-
-    final decoded = jsonDecode(response.body) as List<dynamic>;
-    return decoded.map((item) => Map<String, dynamic>.from(item)).toList();
+    _ensureSuccess(response, 'Nie udało się pobrać urządzeń');
+    return _decodeList(response.body, 'Nieprawidłowa lista urządzeń');
   }
 
   Future<void> addDevice(String id, String name) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/devices'),
-      headers: _headers(includeJson: true),
-      body: jsonEncode({'id': id, 'name': name}),
+    final response = await _send(
+      http.post(
+        Uri.parse('$baseUrl/devices'),
+        headers: _headers(includeJson: true),
+        body: jsonEncode({'id': id, 'name': name}),
+      ),
+      'POST /devices',
     );
-
-    if (response.statusCode != 200) {
-      throw Exception('Nie udało się dodać urządzenia');
-    }
+    _ensureSuccess(response, 'Nie udało się dodać urządzenia');
   }
 
   Future<void> deleteDevice(String id) async {
-    final response = await http.delete(
-      Uri.parse('$baseUrl/devices/$id'),
-      headers: _headers(),
+    final response = await _send(
+      http.delete(
+        Uri.parse('$baseUrl/devices/$id'),
+        headers: _headers(),
+      ),
+      'DELETE /devices/$id',
     );
-
-    if (response.statusCode != 200) {
-      throw Exception('Nie udało się usunąć urządzenia');
-    }
+    _ensureSuccess(response, 'Nie udało się usunąć urządzenia');
   }
 
   Future<void> registerFcmToken(String token) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/fcm/token'),
-      headers: _headers(includeJson: true),
-      body: jsonEncode({'token': token}),
+    final response = await _send(
+      http.post(
+        Uri.parse('$baseUrl/fcm/token'),
+        headers: _headers(includeJson: true),
+        body: jsonEncode({'token': token}),
+      ),
+      'POST /fcm/token',
     );
-
-    if (response.statusCode != 200) {
-      throw Exception('Nie udało się zapisać tokenu FCM');
-    }
+    _ensureSuccess(response, 'Nie udało się zapisać tokenu FCM');
   }
 
   Future<double> getAiRecommendation({
@@ -82,22 +180,24 @@ class ApiService {
     required List<double> humHistory,
     required double targetTemp,
   }) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/ai/control'),
-      headers: _headers(includeJson: true),
-      body: jsonEncode({
-        'device_id': deviceId,
-        'temp_history': tempHistory,
-        'hum_history': humHistory,
-        'target_temp': targetTemp,
-      }),
+    final response = await _send(
+      http.post(
+        Uri.parse('$baseUrl/ai/control'),
+        headers: _headers(includeJson: true),
+        body: jsonEncode({
+          'device_id': deviceId,
+          'temp_history': tempHistory,
+          'hum_history': humHistory,
+          'target_temp': targetTemp,
+        }),
+      ),
+      'POST /ai/control',
     );
-
-    if (response.statusCode != 200) {
-      throw Exception('Nie udało się pobrać rekomendacji AI');
-    }
-
-    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    _ensureSuccess(response, 'Nie udało się pobrać rekomendacji AI');
+    final decoded = _decodeMap(
+      response.body,
+      'Nieprawidłowa odpowiedź rekomendacji AI',
+    );
     return (decoded['recommended_target'] as num).toDouble();
   }
 
@@ -106,21 +206,20 @@ class ApiService {
     required String scene,
     List<double>? tempHistory,
   }) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/scenes/apply'),
-      headers: _headers(includeJson: true),
-      body: jsonEncode({
-        'device_id': deviceId,
-        'scene': scene,
-        if (tempHistory != null) 'temp_history': tempHistory,
-      }),
+    final response = await _send(
+      http.post(
+        Uri.parse('$baseUrl/scenes/apply'),
+        headers: _headers(includeJson: true),
+        body: jsonEncode({
+          'device_id': deviceId,
+          'scene': scene,
+          'temp_history': tempHistory,
+        }),
+      ),
+      'POST /scenes/apply',
     );
-
-    if (response.statusCode != 200) {
-      throw Exception('Nie udało się zastosować sceny');
-    }
-
-    return Map<String, dynamic>.from(jsonDecode(response.body) as Map);
+    _ensureSuccess(response, 'Nie udało się zastosować sceny');
+    return _decodeMap(response.body, 'Nieprawidłowa odpowiedź sceny');
   }
 
   Future<bool> evaluateHumidityAlert({
@@ -128,21 +227,23 @@ class ApiService {
     required double temp,
     required double humidity,
   }) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/alerts/evaluate'),
-      headers: _headers(includeJson: true),
-      body: jsonEncode({
-        'device_id': deviceId,
-        'temp': temp,
-        'humidity': humidity,
-      }),
+    final response = await _send(
+      http.post(
+        Uri.parse('$baseUrl/alerts/evaluate'),
+        headers: _headers(includeJson: true),
+        body: jsonEncode({
+          'device_id': deviceId,
+          'temp': temp,
+          'humidity': humidity,
+        }),
+      ),
+      'POST /alerts/evaluate',
     );
-
-    if (response.statusCode != 200) {
-      throw Exception('Nie udało się zweryfikować alertu wilgotności');
-    }
-
-    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    _ensureSuccess(response, 'Nie udało się zweryfikować alertu wilgotności');
+    final decoded = _decodeMap(
+      response.body,
+      'Nieprawidłowa odpowiedź alertu wilgotności',
+    );
     return decoded['alert_sent'] == true;
   }
 
@@ -151,31 +252,29 @@ class ApiService {
     required double temp,
     required double hum,
   }) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/telemetry'),
-      headers: _headers(includeJson: true),
-      body: jsonEncode({'device_id': deviceId, 'temp': temp, 'hum': hum}),
+    final response = await _send(
+      http.post(
+        Uri.parse('$baseUrl/telemetry'),
+        headers: _headers(includeJson: true),
+        body: jsonEncode({'device_id': deviceId, 'temp': temp, 'hum': hum}),
+      ),
+      'POST /telemetry',
     );
-
-    if (response.statusCode != 200) {
-      throw Exception('Nie udało się zapisać telemetrii');
-    }
+    _ensureSuccess(response, 'Nie udało się zapisać telemetrii');
   }
 
   Future<List<Map<String, dynamic>>> getHistory({
     required String deviceId,
     int limit = 60,
   }) async {
-    final response = await http.get(
-      Uri.parse('$baseUrl/history?device=$deviceId&limit=$limit'),
-      headers: _headers(),
+    final response = await _send(
+      http.get(
+        Uri.parse('$baseUrl/history?device=$deviceId&limit=$limit'),
+        headers: _headers(),
+      ),
+      'GET /history',
     );
-
-    if (response.statusCode != 200) {
-      throw Exception('Nie udało się pobrać historii');
-    }
-
-    final decoded = jsonDecode(response.body) as List<dynamic>;
-    return decoded.map((item) => Map<String, dynamic>.from(item)).toList();
+    _ensureSuccess(response, 'Nie udało się pobrać historii');
+    return _decodeList(response.body, 'Nieprawidłowa odpowiedź historii');
   }
 }

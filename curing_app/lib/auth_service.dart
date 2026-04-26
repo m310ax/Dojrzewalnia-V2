@@ -1,8 +1,18 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+
+enum AuthFailureReason {
+  timeout,
+  connection,
+  htmlResponse,
+  invalidJson,
+  missingToken,
+  serverResponse,
+}
 
 class AuthService {
   factory AuthService() => _instance;
@@ -11,12 +21,13 @@ class AuthService {
 
   static final AuthService _instance = AuthService._internal();
 
-  static const String defaultBaseUrl = 'http://srv22.mikr.us:10551';
+  static const String defaultBaseUrl = 'http://srv22.mikr.us:40222';
   static const String _tokenPrefsKey = 'auth_token';
   static const Duration _requestTimeout = Duration(seconds: 5);
 
   String? token;
   String? lastErrorMessage;
+  AuthFailureReason? lastFailureReason;
 
   Future<void> loadToken() async {
     final prefs = await SharedPreferences.getInstance();
@@ -40,6 +51,7 @@ class AuthService {
     Map<String, dynamic> body,
   ) async {
     lastErrorMessage = null;
+    lastFailureReason = null;
 
     try {
       final response = await http
@@ -53,9 +65,29 @@ class AuthService {
       debugPrint('Auth $path status: ${response.statusCode}');
       debugPrint('Auth $path body: ${response.body}');
       return response;
+    } on TimeoutException catch (error) {
+      lastFailureReason = AuthFailureReason.timeout;
+      lastErrorMessage = 'Serwer nie odpowiedział w wymaganym czasie';
+      debugPrint('Auth $path timeout: $error');
+      return null;
     } on Exception catch (error) {
+      lastFailureReason = AuthFailureReason.connection;
       lastErrorMessage = 'Brak połączenia z serwerem';
       debugPrint('Auth $path error: $error');
+      return null;
+    }
+  }
+
+  String? _extractServerError(String body) {
+    try {
+      final payload = jsonDecode(body);
+      if (payload is! Map<String, dynamic>) {
+        return null;
+      }
+
+      final error = payload['error'] ?? payload['message'];
+      return error is String && error.isNotEmpty ? error : null;
+    } on FormatException {
       return null;
     }
   }
@@ -71,18 +103,53 @@ class AuthService {
     }
 
     if (response.statusCode != 200) {
-      lastErrorMessage = 'Logowanie nieudane (${response.statusCode})';
+      final body = response.body.trimLeft();
+      if (body.startsWith('<')) {
+        lastFailureReason = AuthFailureReason.htmlResponse;
+        lastErrorMessage = 'Serwer zwrócił HTML zamiast odpowiedzi API';
+        return false;
+      }
+
+      lastFailureReason = AuthFailureReason.serverResponse;
+      lastErrorMessage =
+          _extractServerError(response.body) ??
+          'Logowanie nieudane (${response.statusCode})';
       return false;
     }
 
-    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
-    final accessToken = decoded['access_token'];
-    if (accessToken is! String || accessToken.isEmpty) {
+    final body = response.body.trimLeft();
+    if (body.startsWith('<')) {
+      lastFailureReason = AuthFailureReason.htmlResponse;
+      lastErrorMessage = 'Serwer zwrócił HTML zamiast odpowiedzi API';
+      debugPrint('Auth login HTML body: ${response.body}');
+      return false;
+    }
+
+    late final Map<String, dynamic> decoded;
+    try {
+      final payload = jsonDecode(response.body);
+      if (payload is! Map<String, dynamic>) {
+        lastFailureReason = AuthFailureReason.invalidJson;
+        lastErrorMessage = 'Nieprawidłowa odpowiedź serwera';
+        return false;
+      }
+      decoded = payload;
+    } on FormatException {
+      lastFailureReason = AuthFailureReason.invalidJson;
+      lastErrorMessage = 'Serwer zwrócił nieprawidłową odpowiedź';
+      debugPrint('Auth login invalid JSON body: ${response.body}');
+      return false;
+    }
+
+    final rawToken = decoded['access_token'] ?? decoded['token'];
+    if (rawToken is! String || rawToken.isEmpty) {
+      lastFailureReason = AuthFailureReason.missingToken;
       lastErrorMessage = 'Serwer nie zwrócił tokenu logowania';
+      debugPrint('Auth login missing token field in body: ${response.body}');
       return false;
     }
 
-    token = accessToken;
+    token = rawToken;
     await _saveToken(token!);
     return true;
   }
@@ -98,7 +165,17 @@ class AuthService {
     }
 
     if (response.statusCode != 200) {
-      lastErrorMessage = 'Rejestracja nieudana (${response.statusCode})';
+      final body = response.body.trimLeft();
+      if (body.startsWith('<')) {
+        lastFailureReason = AuthFailureReason.htmlResponse;
+        lastErrorMessage = 'Serwer zwrócił HTML zamiast odpowiedzi API';
+        return false;
+      }
+
+      lastFailureReason = AuthFailureReason.serverResponse;
+      lastErrorMessage =
+          _extractServerError(response.body) ??
+          'Rejestracja nieudana (${response.statusCode})';
       return false;
     }
 
