@@ -242,10 +242,12 @@ class _HomePageState extends State<HomePage>
 
     _isDeviceDataLoading = true;
     try {
-      final snapshot = await api.getDeviceData(deviceId: selectedDevice);
+      final latest = await api.getDeviceData(deviceId: selectedDevice);
       if (!mounted) {
         return;
       }
+
+      final snapshot = Map<String, dynamic>.from(latest['data'] as Map);
 
       final nextTemp = _doubleValue(snapshot['temp']);
       final nextHum = _doubleValue(snapshot['humidity']);

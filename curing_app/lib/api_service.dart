@@ -179,19 +179,22 @@ class ApiService {
 
   Future<Map<String, dynamic>> getDeviceData({required String deviceId}) async {
     final response = await _send(
-      http.post(
-        Uri.parse('$baseUrl/device_data'),
-        headers: _headers(includeJson: true),
-        body: jsonEncode({'device_id': deviceId}),
+      http.get(
+        Uri.parse('$baseUrl/latest?device_id=$deviceId'),
+        headers: _headers(),
       ),
-      'POST /device_data',
+      'GET /latest',
     );
     _ensureSuccess(response, 'Nie udało się pobrać danych urządzenia');
     final decoded = _decodeMap(
       response.body,
       'Nieprawidłowa odpowiedź danych urządzenia',
     );
-    return Map<String, dynamic>.from(decoded['data'] as Map);
+    return {
+      'topic': decoded['topic'],
+      'time': decoded['time'],
+      'data': Map<String, dynamic>.from(decoded['data'] as Map),
+    };
   }
 
   Future<void> sendControlCommand({

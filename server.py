@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import threading
+import time
 import uuid
 
 import paho.mqtt.client as mqtt
@@ -149,6 +150,8 @@ def store_device_message(topic, payload):
         snapshot[_device_field_name(logical_topic)] = _normalize_device_value(
             logical_topic, payload
         )
+        snapshot["_last_topic"] = topic
+        snapshot["_updated_at"] = int(time.time())
         device_data[device_id] = snapshot
 
     return True
@@ -413,6 +416,28 @@ def get_device_data_snapshot():
         return jsonify({"error": "Brak danych live dla urządzenia"}), 404
 
     return jsonify({"success": True, "data": snapshot})
+
+
+@app.route("/latest", methods=["GET"])
+@jwt_required()
+def latest_device_data():
+    uid = get_jwt_identity()
+    device_id = (request.args.get("device_id") or "").strip()
+    if not device_id:
+        return jsonify({"error": "device_id query parameter is required"}), 400
+
+    if not user_owns_device(uid, device_id):
+        return jsonify({"error": "Nie znaleziono urządzenia"}), 404
+
+    with device_data_lock:
+        snapshot = dict(device_data.get(device_id, {}))
+
+    if not snapshot:
+        return jsonify({"error": "Brak danych live dla urządzenia"}), 404
+
+    topic = snapshot.pop("_last_topic", f"devices/{device_id}/curing")
+    updated_at = snapshot.pop("_updated_at", int(time.time()))
+    return jsonify({"topic": topic, "data": snapshot, "time": updated_at})
 
 
 @app.route("/control", methods=["POST"])
