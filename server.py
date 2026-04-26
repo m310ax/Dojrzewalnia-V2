@@ -20,7 +20,7 @@ from ai import ai_control, check_alerts
 
 app = Flask(__name__)
 app.config["JWT_SECRET_KEY"] = os.environ.get("JWT_SECRET_KEY", "SUPER_SECRET_KEY")
-app.config["PORT"] = int(os.environ.get("PORT", "20022"))
+app.config["PORT"] = int(os.environ.get("PORT", "20345"))
 USERS_FILE = "/root/curing-system/data/users.json"
 
 bcrypt = Bcrypt(app)
@@ -680,4 +680,4 @@ def evaluate_alerts():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=20022)
+    app.run(host="0.0.0.0", port=20345)

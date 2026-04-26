@@ -36,4 +36,4 @@ Minimum na start:
 
 ## Mikr.us
 
-Przy uruchamianiu bez reverse proxy backend może nasłuchiwać bezpośrednio na porcie `20551`, zgodnie z `PORT=20551`.
+Przy uruchamianiu bez reverse proxy backend może nasłuchiwać bezpośrednio na porcie `20345`, zgodnie z `PORT=20345`.
