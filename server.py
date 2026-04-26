@@ -106,6 +106,8 @@ scenes = {
     "boost": {"temp": 5.0, "hum": 50},
 }
 
+ai_scenes = {"ai_on", "ai_off"}
+
 MQTT_SERVER = os.environ.get("MQTT_SERVER", "srv22.mikr.us")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "20552"))
 MQTT_USERNAME = os.environ.get("MQTT_USERNAME", "curing_user")
@@ -160,8 +162,17 @@ def _device_field_name(logical_topic):
         "curing/set/hum_max": "hum_max",
         "curing/set/profile": "profile",
         "curing/mode": "mode",
+        "control/ai": "ai_enabled",
     }
     return field_map.get(logical_topic, logical_topic.replace("/", "_"))
+
+
+def _update_device_snapshot(device_id, **values):
+    with device_data_lock:
+        snapshot = dict(device_data.get(device_id, {}))
+        snapshot.update(values)
+        snapshot["_updated_at"] = int(time.time())
+        device_data[device_id] = snapshot
 
 
 def store_device_message(topic, payload):
@@ -179,10 +190,12 @@ def store_device_message(topic, payload):
             return False
 
         with available_devices_lock:
+            existing = dict(available_devices.get(device_id, {}))
             available_devices[device_id] = {
                 "id": device_id,
                 "ip": data_payload.get("ip"),
                 "rssi": data_payload.get("rssi"),
+                "first_seen": existing.get("first_seen", time.time()),
                 "last_seen": time.time(),
             }
 
@@ -224,7 +237,7 @@ def store_device_message(topic, payload):
 
             snapshot["data"] = data_payload
         else:
-            if not logical_topic.startswith("curing/"):
+            if not logical_topic.startswith(("curing/", "control/")):
                 return False
 
             snapshot[_device_field_name(logical_topic)] = _normalize_device_value(
@@ -256,6 +269,25 @@ def _connection_quality(rssi):
     if rssi > -80:
         return "weak"
     return "bad"
+
+
+def _serialize_discovered_devices():
+    now = time.time()
+    with available_devices_lock:
+        entries = [dict(device) for device in available_devices.values()]
+
+    entries.sort(key=lambda item: item["id"].lower())
+    return [
+        {
+            "id": entry["id"],
+            "ip": entry.get("ip"),
+            "rssi": entry.get("rssi"),
+            "quality": _connection_quality(entry.get("rssi")),
+            "online": (now - float(entry.get("last_seen") or 0)) < 15,
+            "first_seen": int(entry.get("first_seen") or entry.get("last_seen") or now),
+        }
+        for entry in entries
+    ]
 
 
 def _clamp(value, minimum, maximum):
@@ -371,6 +403,34 @@ def publish_device_command(device_id, logical_topic, value):
         return False, "Nie udało się wysłać komendy MQTT"
 
     return True, scoped_topic
+
+
+def get_current_device_targets(device_id):
+    defaults = {"temp": 14.0, "hum": 80.0}
+
+    with device_data_lock:
+        snapshot = dict(device_data.get(device_id, {}))
+
+    if not snapshot:
+        return defaults
+
+    temp_value = snapshot.get("temp_max", snapshot.get("temp", defaults["temp"]))
+    hum_value = snapshot.get(
+        "hum_max",
+        snapshot.get("hum", snapshot.get("humidity", defaults["hum"])),
+    )
+
+    try:
+        temp_target = _clamp(float(temp_value), 0.0, 25.0)
+    except (TypeError, ValueError):
+        temp_target = defaults["temp"]
+
+    try:
+        hum_target = _clamp(float(hum_value), 0.0, 100.0)
+    except (TypeError, ValueError):
+        hum_target = defaults["hum"]
+
+    return {"temp": round(temp_target, 1), "hum": round(hum_target, 0)}
 
 
 def _handle_mqtt_connect(client, userdata, flags, rc):
@@ -584,23 +644,13 @@ def get_devices():
 @app.route("/devices/available", methods=["GET"])
 @jwt_required()
 def get_available_devices():
-    now = time.time()
-    with available_devices_lock:
-        entries = [dict(device) for device in available_devices.values()]
+    return jsonify(_serialize_discovered_devices())
 
-    entries.sort(key=lambda item: item["id"].lower())
-    return jsonify(
-        [
-            {
-                "id": entry["id"],
-                "ip": entry.get("ip"),
-                "rssi": entry.get("rssi"),
-                "quality": _connection_quality(entry.get("rssi")),
-                "online": (now - float(entry.get("last_seen") or 0)) < 15,
-            }
-            for entry in entries
-        ]
-    )
+
+@app.route("/devices/discovered", methods=["GET"])
+@jwt_required()
+def get_discovered_devices():
+    return jsonify(_serialize_discovered_devices())
 
 
 @app.route("/devices/<device_id>", methods=["DELETE"])
@@ -928,7 +978,7 @@ def get_ai_control():
 @app.route("/scenes", methods=["GET"])
 @jwt_required()
 def list_scenes():
-    return jsonify(scenes)
+    return jsonify({**scenes, **{scene: {} for scene in sorted(ai_scenes)}})
 
 
 @app.route("/scenes/apply", methods=["POST"])
@@ -945,6 +995,28 @@ def apply_scene():
         return jsonify({"error": "Nie znaleziono urządzenia"}), 404
 
     scene_name = data["scene"].strip().lower()
+    if scene_name in ai_scenes:
+        ai_enabled = scene_name == "ai_on"
+        command_ok, command_result = publish_device_command(
+            device_id,
+            "control/ai",
+            1 if ai_enabled else 0,
+        )
+        if not command_ok:
+            return jsonify({"error": command_result}), 503
+
+        _update_device_snapshot(device_id, ai_enabled=ai_enabled)
+
+        return jsonify(
+            {
+                "status": "OK",
+                "device_id": device_id,
+                "scene": scene_name,
+                "ai_enabled": ai_enabled,
+                "commands": get_current_device_targets(device_id),
+            }
+        )
+
     if scene_name not in scenes:
         return jsonify({"error": "Unknown scene"}), 404
 

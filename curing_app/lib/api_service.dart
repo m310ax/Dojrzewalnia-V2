@@ -129,10 +129,7 @@ class ApiService {
 
   Future<List<Map<String, dynamic>>> getDevices() async {
     final response = await _send(
-      http.get(
-        Uri.parse('$baseUrl/devices'),
-        headers: _headers(),
-      ),
+      http.get(Uri.parse('$baseUrl/devices'), headers: _headers()),
       'GET /devices',
     );
     _ensureSuccess(response, 'Nie udało się pobrać urządzeń');
@@ -141,13 +138,21 @@ class ApiService {
 
   Future<List<Map<String, dynamic>>> getAvailableDevices() async {
     final response = await _send(
-      http.get(
-        Uri.parse('$baseUrl/devices/available'),
-        headers: _headers(),
-      ),
+      http.get(Uri.parse('$baseUrl/devices/available'), headers: _headers()),
       'GET /devices/available',
     );
     _ensureSuccess(response, 'Nie udało się pobrać listy wykrytych urządzeń');
+    return _decodeList(response.body, 'Nieprawidłowa lista wykrytych urządzeń');
+  }
+
+  Future<List<Map<String, dynamic>>> getDiscoveredDevices() async {
+    final response = await _send(
+      http.get(Uri.parse('$baseUrl/devices/discovered'), headers: _headers()),
+      'GET /devices/discovered',
+    );
+
+    _ensureSuccess(response, 'Nie udało się pobrać wykrytych urządzeń');
+
     return _decodeList(response.body, 'Nieprawidłowa lista wykrytych urządzeń');
   }
 
@@ -168,10 +173,7 @@ class ApiService {
 
   Future<void> deleteDevice(String id) async {
     final response = await _send(
-      http.delete(
-        Uri.parse('$baseUrl/devices/$id'),
-        headers: _headers(),
-      ),
+      http.delete(Uri.parse('$baseUrl/devices/$id'), headers: _headers()),
       'DELETE /devices/$id',
     );
     _ensureSuccess(response, 'Nie udało się usunąć urządzenia');
@@ -246,10 +248,7 @@ class ApiService {
     required String mode,
     double? targetTemp,
   }) async {
-    final payload = <String, dynamic>{
-      'device_id': deviceId,
-      'mode': mode,
-    };
+    final payload = <String, dynamic>{'device_id': deviceId, 'mode': mode};
     if (targetTemp != null) {
       payload['target_temp'] = targetTemp;
     }

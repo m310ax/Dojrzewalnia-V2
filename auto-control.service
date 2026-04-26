@@ -1,0 +1,11 @@
+[Unit]
+Description=Auto Control (PID + AI)
+After=network.target
+
+[Service]
+ExecStart=/root/backend/venv/bin/python /root/backend/auto_control.py
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target

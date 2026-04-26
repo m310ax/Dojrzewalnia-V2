@@ -15,6 +15,8 @@ float getHysteresis();
 float getAirTime();
 float getAirInterval();
 String getProfile();
+void setCoolOverride(bool enabled, bool on);
+void setHumOverride(bool enabled, bool on);
 
 namespace {
 constexpr float kTempLowerLimit = 0.0F;
@@ -33,6 +35,8 @@ Preferences prefs;
 bool prefsReady = false;
 bool coolOverrideEnabled = false;
 bool coolOverrideState = false;
+bool humOverrideEnabled = false;
+bool humOverrideState = false;
 bool fanOverrideEnabled = false;
 bool fanOverrideState = true;
 String deviceId = MQTT_DEVICE_ID;
@@ -125,6 +129,107 @@ String scopedTopic(const char* logicalTopic) {
   return String("devices/") + deviceId + "/" + logicalTopic;
 }
 
+bool extractJsonStringField(const String& payload, const char* fieldName, String* value) {
+  const String quotedField = String("\"") + fieldName + "\"";
+  const int fieldIndex = payload.indexOf(quotedField);
+  if (fieldIndex < 0) {
+    return false;
+  }
+
+  const int colonIndex = payload.indexOf(':', fieldIndex + quotedField.length());
+  if (colonIndex < 0) {
+    return false;
+  }
+
+  const int startQuoteIndex = payload.indexOf('"', colonIndex + 1);
+  if (startQuoteIndex < 0) {
+    return false;
+  }
+
+  const int endQuoteIndex = payload.indexOf('"', startQuoteIndex + 1);
+  if (endQuoteIndex < 0) {
+    return false;
+  }
+
+  *value = payload.substring(startQuoteIndex + 1, endQuoteIndex);
+  value->trim();
+  return value->length() > 0;
+}
+
+bool extractJsonBoolField(const String& payload, const char* fieldName, bool* value) {
+  const String quotedField = String("\"") + fieldName + "\"";
+  const int fieldIndex = payload.indexOf(quotedField);
+  if (fieldIndex < 0) {
+    return false;
+  }
+
+  const int colonIndex = payload.indexOf(':', fieldIndex + quotedField.length());
+  if (colonIndex < 0) {
+    return false;
+  }
+
+  int valueIndex = colonIndex + 1;
+  while (valueIndex < payload.length() && isspace(static_cast<unsigned char>(payload[valueIndex]))) {
+    ++valueIndex;
+  }
+
+  String rawValue;
+  while (valueIndex < payload.length()) {
+    const char current = payload[valueIndex];
+    if (current == ',' || current == '}') {
+      break;
+    }
+    rawValue += current;
+    ++valueIndex;
+  }
+
+  rawValue.trim();
+  rawValue.toLowerCase();
+  if (rawValue == "true" || rawValue == "1") {
+    *value = true;
+    return true;
+  }
+
+  if (rawValue == "false" || rawValue == "0") {
+    *value = false;
+    return true;
+  }
+
+  return false;
+}
+
+bool handleGlobalControlMessage(const String& payload) {
+  String targetDeviceId;
+  if (!extractJsonStringField(payload, "device_id", &targetDeviceId)) {
+    return false;
+  }
+
+  if (!targetDeviceId.equalsIgnoreCase(deviceId)) {
+    return false;
+  }
+
+  String commandTopic;
+  bool commandValue = false;
+  if (!extractJsonStringField(payload, "topic", &commandTopic) ||
+      !extractJsonBoolField(payload, "value", &commandValue)) {
+    return false;
+  }
+
+  commandTopic.toLowerCase();
+
+  if (commandTopic == "cooling") {
+    setCoolOverride(true, commandValue);
+    return true;
+  }
+
+  if (commandTopic == "humidifier") {
+    setHumOverride(true, commandValue);
+    return true;
+  }
+
+  return false;
+}
+
 String logicalTopicFromScoped(const String& topic) {
   const String prefix = String("devices/") + deviceId + "/";
   if (!topic.startsWith(prefix)) {
@@ -176,11 +281,12 @@ bool parseSwitchOverrideMessage(const String& rawMessage, bool* enabled, bool* s
 }
 
 void publishJsonSnapshot(float temp, float hum) {
-  char payload[96];
+  char payload[128];
   snprintf(
       payload,
       sizeof(payload),
-      "{\"temp\": %.2f, \"hum\": %.2f}",
+      "{\"device_id\":\"%s\",\"temp\":%.2f,\"hum\":%.2f}",
+      deviceId.c_str(),
       temp,
       hum);
   publishRetained("data", String(payload));
@@ -324,6 +430,19 @@ bool getCoolOverrideState() {
   return coolOverrideState;
 }
 
+void setHumOverride(bool enabled, bool on) {
+  humOverrideEnabled = enabled;
+  humOverrideState = on;
+}
+
+bool isHumOverrideEnabled() {
+  return humOverrideEnabled;
+}
+
+bool getHumOverrideState() {
+  return humOverrideState;
+}
+
 void setFanOverride(bool enabled, bool on) {
   fanOverrideEnabled = enabled;
   fanOverrideState = on;
@@ -349,6 +468,12 @@ void callback(char* topic, byte* payload, unsigned int length) {
   }
 
   String t = String(topic);
+
+  if (t == "devices/control") {
+    handleGlobalControlMessage(msg);
+    return;
+  }
+
   t = logicalTopicFromScoped(t);
 
   if (t == "control/cool") {
@@ -363,6 +488,33 @@ void callback(char* topic, byte* payload, unsigned int length) {
   if (t == "control/fan") {
     bool enabled = false;
     bool state = true;
+    if (parseSwitchOverrideMessage(msg, &enabled, &state)) {
+      setFanOverride(enabled, state);
+    }
+    return;
+  }
+
+  if (t == "control/heater") {
+    bool enabled = false;
+    bool state = false;
+    if (parseSwitchOverrideMessage(msg, &enabled, &state)) {
+      setCoolOverride(enabled, state);
+    }
+    return;
+  }
+
+  if (t == "control/hum" || t == "control/humifier" || t == "control/humidifier") {
+    bool enabled = false;
+    bool state = false;
+    if (parseSwitchOverrideMessage(msg, &enabled, &state)) {
+      setHumOverride(enabled, state);
+    }
+    return;
+  }
+
+  if (t == "control/dehumidifier") {
+    bool enabled = false;
+    bool state = false;
     if (parseSwitchOverrideMessage(msg, &enabled, &state)) {
       setFanOverride(enabled, state);
     }
@@ -405,6 +557,7 @@ void reconnect() {
     const String controlTopic = scopedTopic("control/#");
     client.subscribe(commandTopic.c_str());
     client.subscribe(controlTopic.c_str());
+    client.subscribe("devices/control");
     client.publish(statusTopic.c_str(), "online", true);
   }
 }

@@ -13,8 +13,9 @@ class MqttService {
 
   static const String _legacyServer = 'srv22.mikr.us';
   static const int _legacyPort = 1883;
-  static const String defaultServer = 'srv22.mikr.us';
-  static const int defaultPort = 20552;
+  static const int _legacyPortAlt = 20552;
+  static const String defaultServer = 'yasmin345.mikrus.xyz';
+  static const int defaultPort = 30345;
   static const String _username = 'curing_user';
   static const String _password = 'mocne';
   static const String _serverPrefsKey = 'mqtt_broker_server';
@@ -53,7 +54,8 @@ class MqttService {
     _port = prefs.getInt(_portPrefsKey) ?? defaultPort;
     _selectedDevice = prefs.getString(_devicePrefsKey) ?? '';
 
-    if (_server == _legacyServer && _port == _legacyPort) {
+    if (_server == _legacyServer &&
+        (_port == _legacyPort || _port == _legacyPortAlt)) {
       _server = defaultServer;
       _port = defaultPort;
       await _saveSettings();

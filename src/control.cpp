@@ -13,8 +13,8 @@ void controlLogic(float temp, float hum) {
     digitalWrite(
         RELAY_COOL,
         isCoolOverrideEnabled() ? (getCoolOverrideState() ? HIGH : LOW) : (temp > 3.0F ? HIGH : LOW));
-    digitalWrite(RELAY_HUM, hum < 75.0F ? HIGH : LOW);
-    digitalWrite(RELAY_FAN, isFanOverrideEnabled() && !getFanOverrideState() ? LOW : HIGH);
+    digitalWrite(RELAY_HUM, isHumOverrideEnabled() ? (getHumOverrideState() ? HIGH : LOW) : (hum < 75.0F ? HIGH : LOW));
+    digitalWrite(RELAY_FAN, isFanOverrideEnabled() ? (getFanOverrideState() ? HIGH : LOW) : HIGH);
     return;
   }
 
@@ -28,11 +28,15 @@ void controlLogic(float temp, float hum) {
     }
   }
 
-  if (hum < getHumMin()) {
-    digitalWrite(RELAY_HUM, HIGH);
-  } else if (hum > getHumMax()) {
-    digitalWrite(RELAY_HUM, LOW);
+  if (isHumOverrideEnabled()) {
+    digitalWrite(RELAY_HUM, getHumOverrideState() ? HIGH : LOW);
+  } else {
+    if (hum < getHumMin()) {
+      digitalWrite(RELAY_HUM, HIGH);
+    } else if (hum > getHumMax()) {
+      digitalWrite(RELAY_HUM, LOW);
+    }
   }
 
-  digitalWrite(RELAY_FAN, isFanOverrideEnabled() && !getFanOverrideState() ? LOW : HIGH);
+  digitalWrite(RELAY_FAN, isFanOverrideEnabled() ? (getFanOverrideState() ? HIGH : LOW) : HIGH);
 }

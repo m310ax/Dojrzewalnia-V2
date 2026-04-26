@@ -1,8 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../api_service.dart';
+import '../device_provider.dart';
 import '../mqtt_service.dart';
 import '../widgets/glass_card.dart';
+import '../device_selector.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key, required this.onLogout});
@@ -45,7 +50,8 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> send() async {
-    final deviceId = mqtt.selectedDevice.trim();
+    final deviceId =
+        context.read<DeviceProvider>().selectedDeviceId?.trim() ?? '';
     if (deviceId.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Najpierw wybierz urządzenie')),
@@ -74,7 +80,9 @@ class _SettingsPageState extends State<SettingsPage> {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Nie udało się wysłać ustawień do urządzenia')),
+        const SnackBar(
+          content: Text('Nie udało się wysłać ustawień do urządzenia'),
+        ),
       );
       return;
     }
@@ -160,6 +168,14 @@ class _SettingsPageState extends State<SettingsPage> {
     setState(() => _isLoggingOut = false);
   }
 
+  Future<void> _handleDeviceSelection(String id) async {
+    await mqtt.subscribeDevice(id);
+    if (!mounted) {
+      return;
+    }
+    setState(() {});
+  }
+
   Widget _sliderField({
     required String label,
     required String value,
@@ -202,6 +218,24 @@ class _SettingsPageState extends State<SettingsPage> {
                 style: Theme.of(
                   context,
                 ).textTheme.bodyMedium?.copyWith(color: Colors.white70),
+              ),
+              const SizedBox(height: 16),
+              GlassCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Aktywne urządzenie',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 12),
+                    DeviceSelector(
+                      onChanged: (value) {
+                        unawaited(_handleDeviceSelection(value));
+                      },
+                    ),
+                  ],
+                ),
               ),
               const SizedBox(height: 16),
               GlassCard(

@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'auth_service.dart';
+import 'device_provider.dart';
 import 'mqtt_service.dart';
 import 'notification_service.dart';
 import 'screens/onboarding.dart';
@@ -16,7 +18,17 @@ Future<void> main() async {
   await AuthService().loadToken();
   await MqttService().loadSettings();
   await NotificationService().initialize();
-  runApp(const MyApp());
+  final mqtt = MqttService();
+  final initialDeviceId = mqtt.selectedDevice.trim().isEmpty
+      ? null
+      : mqtt.selectedDevice.trim();
+
+  runApp(
+    ChangeNotifierProvider(
+      create: (_) => DeviceProvider(initialDeviceId: initialDeviceId),
+      child: const MyApp(),
+    ),
+  );
 }
 
 class MyApp extends StatelessWidget {
@@ -110,8 +122,10 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   Future<void> _handleLogout() async {
+    final deviceProvider = context.read<DeviceProvider>();
     await _auth.logout();
     MqttService().disconnect();
+    deviceProvider.setDevice(null);
 
     if (!mounted) {
       return;

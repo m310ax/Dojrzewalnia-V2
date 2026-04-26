@@ -1,14 +1,18 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../api_service.dart';
+import '../device_provider.dart';
+import '../device_selector.dart';
 import '../mqtt_service.dart';
 import '../widget_service.dart';
 import '../widgets/control_slider.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/glow.dart';
 import '../widgets/multi_chart.dart';
+import 'discovered_devices_screen.dart';
 import 'tiles_page.dart';
 
 class HomePage extends StatefulWidget {
@@ -42,6 +46,7 @@ class _HomePageState extends State<HomePage>
   bool deviceOnline = false;
   bool isConnecting = false;
   bool isConnected = false;
+  bool aiEnabled = false;
   bool isLoadingDevices = false;
   bool _pidAutoEnabled = false;
   bool _isPidModeLoading = false;
@@ -62,6 +67,7 @@ class _HomePageState extends State<HomePage>
   bool _isDeviceDataLoading = false;
   bool _humidityAlertTriggered = false;
   bool _isHistoryLoading = false;
+  String? _lastObservedProviderDeviceId;
   late final AnimationController _pulse;
 
   @override
@@ -128,6 +134,37 @@ class _HomePageState extends State<HomePage>
     if (oldWidget.deviceRevision != widget.deviceRevision) {
       unawaited(loadDevices());
     }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+
+    final providerDeviceId = context.watch<DeviceProvider>().selectedDeviceId;
+    if (_lastObservedProviderDeviceId == providerDeviceId) {
+      return;
+    }
+
+    _lastObservedProviderDeviceId = providerDeviceId;
+
+    if (providerDeviceId == null ||
+        providerDeviceId.isEmpty ||
+        providerDeviceId == selectedDevice) {
+      return;
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+
+      if (devices.any((device) => device['id']?.toString() == providerDeviceId)) {
+        unawaited(_selectDevice(providerDeviceId));
+        return;
+      }
+
+      unawaited(loadDevices());
+    });
   }
 
   Future<void> _initialize() async {
@@ -237,6 +274,31 @@ class _HomePageState extends State<HomePage>
     return null;
   }
 
+  bool? _boolValue(dynamic value) {
+    if (value is bool) {
+      return value;
+    }
+    if (value is num) {
+      return value != 0;
+    }
+    if (value is String) {
+      final normalized = value.trim().toLowerCase();
+      if (normalized == 'true' ||
+          normalized == '1' ||
+          normalized == 'on' ||
+          normalized == 'yes') {
+        return true;
+      }
+      if (normalized == 'false' ||
+          normalized == '0' ||
+          normalized == 'off' ||
+          normalized == 'no') {
+        return false;
+      }
+    }
+    return null;
+  }
+
   Future<void> _refreshBackendDeviceData() async {
     if (selectedDevice.isEmpty || _isDeviceDataLoading) {
       return;
@@ -254,6 +316,7 @@ class _HomePageState extends State<HomePage>
       final nextTemp = _doubleValue(snapshot['temp']);
       final nextHum = _doubleValue(snapshot['humidity']);
       final nextStatus = snapshot['status']?.toString();
+      final nextAiEnabled = _boolValue(snapshot['ai_enabled']);
 
       setState(() {
         if (nextTemp != null) {
@@ -273,6 +336,9 @@ class _HomePageState extends State<HomePage>
         }
         if (nextStatus != null) {
           deviceOnline = nextStatus == 'online';
+        }
+        if (nextAiEnabled != null) {
+          aiEnabled = nextAiEnabled;
         }
         _updateAiStatus();
       });
@@ -403,6 +469,39 @@ class _HomePageState extends State<HomePage>
     }
   }
 
+  Future<void> _toggleAiControl(bool enabled) async {
+    if (selectedDevice.isEmpty) {
+      return;
+    }
+
+    final previousValue = aiEnabled;
+    setState(() => aiEnabled = enabled);
+
+    try {
+      await api.applyScene(
+        deviceId: selectedDevice,
+        scene: enabled ? 'ai_on' : 'ai_off',
+        tempHistory: tempData,
+      );
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        aiText = enabled ? 'AI Control aktywne' : 'AI Control wyłączone';
+      });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() => aiEnabled = previousValue);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Nie udało się przełączyć AI Control')),
+      );
+    }
+  }
+
   Future<void> loadDevices() async {
     setState(() => isLoadingDevices = true);
 
@@ -436,6 +535,12 @@ class _HomePageState extends State<HomePage>
           .toString();
 
       devices = loadedDevices;
+      context.read<DeviceProvider>().setDevice(
+        fallbackDevice.isEmpty ? null : fallbackDevice,
+      );
+      _lastObservedProviderDeviceId = selectedDevice.isEmpty
+          ? null
+          : selectedDevice;
       await mqtt.subscribeDevice(selectedDevice);
       await _loadHistory();
       await _refreshBackendDeviceData();
@@ -462,12 +567,15 @@ class _HomePageState extends State<HomePage>
   }
 
   Future<void> _selectDevice(String deviceId) async {
+    final deviceProvider = context.read<DeviceProvider>();
     final matchingDevice = devices.firstWhere(
       (device) => device['id'] == deviceId,
       orElse: () => {'id': deviceId, 'name': deviceId},
     );
 
     await mqtt.subscribeDevice(deviceId);
+    deviceProvider.setDevice(deviceId);
+    _lastObservedProviderDeviceId = deviceId;
     if (!mounted) {
       return;
     }
@@ -844,27 +952,15 @@ class _HomePageState extends State<HomePage>
                         style: Theme.of(context).textTheme.titleMedium,
                       ),
                       const SizedBox(height: 12),
-                      DropdownButtonFormField<String>(
-                        initialValue: selectedDevice.isEmpty
-                            ? null
-                            : selectedDevice,
-                        isExpanded: true,
-                        decoration: const InputDecoration(
-                          hintText: 'Wybierz urządzenie',
+                      IgnorePointer(
+                        ignoring: isLoadingDevices,
+                        child: DeviceSelector(
+                          onChanged: (value) {
+                            if (value != selectedDevice) {
+                              unawaited(_selectDevice(value));
+                            }
+                          },
                         ),
-                        items: devices.map<DropdownMenuItem<String>>((device) {
-                          return DropdownMenuItem<String>(
-                            value: device['id'].toString(),
-                            child: Text(device['name'].toString()),
-                          );
-                        }).toList(),
-                        onChanged: isLoadingDevices
-                            ? null
-                            : (value) {
-                                if (value != null) {
-                                  _selectDevice(value);
-                                }
-                              },
                       ),
                     ],
                   ),
@@ -924,6 +1020,21 @@ class _HomePageState extends State<HomePage>
                         ).textTheme.bodySmall?.copyWith(color: Colors.white60),
                       ),
                       const SizedBox(height: 12),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: ElevatedButton(
+                          onPressed: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => const DiscoveredDevicesScreen(),
+                              ),
+                            );
+                          },
+                          child: const Text('Dodaj ESP'),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
                       Wrap(
                         spacing: 10,
                         children: [
@@ -951,6 +1062,14 @@ class _HomePageState extends State<HomePage>
                           ),
                         ],
                       ),
+                            SwitchListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: const Text('AI Control'),
+                              value: aiEnabled,
+                              onChanged: (value) {
+                                unawaited(_toggleAiControl(value));
+                              },
+                            ),
                       const SizedBox(height: 8),
                       ControlSlider(
                         label: 'Temperatura maksymalna',

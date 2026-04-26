@@ -1,11 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../api_service.dart';
+import '../device_provider.dart';
 import '../mqtt_service.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/glow.dart';
+import '../device_selector.dart';
 
 class DevicesPage extends StatefulWidget {
   const DevicesPage({super.key, required this.onDevicesChanged});
@@ -89,7 +92,9 @@ class _DevicesPageState extends State<DevicesPage> {
 
       setState(() {
         _availableDevices = devices
-            .where((device) => !pairedIds.contains(device['id']?.toString() ?? ''))
+            .where(
+              (device) => !pairedIds.contains(device['id']?.toString() ?? ''),
+            )
             .toList();
         _isAvailableLoading = false;
       });
@@ -100,7 +105,9 @@ class _DevicesPageState extends State<DevicesPage> {
       setState(() => _isAvailableLoading = false);
       if (showError) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Nie udało się pobrać wykrytych urządzeń')),
+          const SnackBar(
+            content: Text('Nie udało się pobrać wykrytych urządzeń'),
+          ),
         );
       }
     }
@@ -123,7 +130,9 @@ class _DevicesPageState extends State<DevicesPage> {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Nie udało się dodać wykrytego urządzenia')),
+        const SnackBar(
+          content: Text('Nie udało się dodać wykrytego urządzenia'),
+        ),
       );
     }
   }
@@ -182,9 +191,9 @@ class _DevicesPageState extends State<DevicesPage> {
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Podaj ID urządzenia')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Podaj ID urządzenia')));
       return;
     }
 
@@ -205,10 +214,12 @@ class _DevicesPageState extends State<DevicesPage> {
   }
 
   Future<void> _deleteDevice(String id) async {
+    final deviceProvider = context.read<DeviceProvider>();
     try {
       await _api.deleteDevice(id);
       if (_mqtt.selectedDevice == id) {
         await _mqtt.subscribeDevice('');
+        deviceProvider.setDevice(null);
       }
       await _loadDevices();
       await _loadAvailableDevices(showError: false);
@@ -224,7 +235,9 @@ class _DevicesPageState extends State<DevicesPage> {
   }
 
   Future<void> _selectDevice(String id, String name) async {
+    final deviceProvider = context.read<DeviceProvider>();
     await _mqtt.subscribeDevice(id);
+    deviceProvider.setDevice(id);
     widget.onDevicesChanged();
     if (!mounted) {
       return;
@@ -235,10 +248,19 @@ class _DevicesPageState extends State<DevicesPage> {
     setState(() {});
   }
 
-  Widget _deviceCard(Map<String, dynamic> device) {
+
+  void _handleSelectorChanged(String id) {
+    final matchingDevice = _devices.firstWhere(
+      (device) => device['id']?.toString() == id,
+      orElse: () => {'id': id, 'name': id},
+    );
+    unawaited(_selectDevice(id, matchingDevice['name']?.toString() ?? id));
+  }
+
+  Widget _deviceCard(Map<String, dynamic> device, String currentSelectedId) {
     final id = device['id'].toString();
     final name = device['name'].toString();
-    final isSelected = _mqtt.selectedDevice == id;
+    final isSelected = currentSelectedId == id;
     final online = isSelected;
 
     return Padding(
@@ -305,6 +327,9 @@ class _DevicesPageState extends State<DevicesPage> {
 
   @override
   Widget build(BuildContext context) {
+    final currentSelectedId =
+        context.watch<DeviceProvider>().selectedDeviceId ?? _mqtt.selectedDevice;
+
     return Scaffold(
       appBar: AppBar(title: const Text('Devices')),
       floatingActionButton: FloatingActionButton(
@@ -344,9 +369,9 @@ class _DevicesPageState extends State<DevicesPage> {
                     children: [
                       Expanded(
                         child: Text(
-                          _mqtt.selectedDevice.isEmpty
+                          currentSelectedId.isEmpty
                               ? 'Brak aktywnego urządzenia'
-                              : 'Aktywne: ${_mqtt.selectedDevice}',
+                              : 'Aktywne: $currentSelectedId',
                         ),
                       ),
                       IconButton(
@@ -367,18 +392,34 @@ class _DevicesPageState extends State<DevicesPage> {
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
                 const SizedBox(height: 8),
+                GlassCard(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Globalny selector urządzenia',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 12),
+                      DeviceSelector(onChanged: _handleSelectorChanged),
+                    ],
+                  ),
+                ),
                 if (_availableDevices.isEmpty && !_isAvailableLoading)
                   const GlassCard(
                     child: Text('Brak nowych urządzeń w sieci MQTT.'),
                   )
-                else ..._availableDevices.map(_availableDeviceCard),
+                else
+                  ..._availableDevices.map(_availableDeviceCard),
                 const SizedBox(height: 16),
                 if (_devices.isEmpty && !_isLoading)
                   const GlassCard(
                     child: Text('Brak urządzeń. Dodaj pierwsze urządzenie.'),
                   )
                 else
-                  ..._devices.map(_deviceCard),
+                  ..._devices.map(
+                    (device) => _deviceCard(device, currentSelectedId),
+                  ),
               ],
             ),
           ),

@@ -171,7 +171,8 @@ class _LoginPageState extends State<LoginPage> {
                                         .bodyMedium
                                         ?.copyWith(color: Colors.white),
                                   ),
-                                  if (_errorHint(_errorReason) case final hint?) ...[
+                                  if (_errorHint(_errorReason)
+                                      case final hint?) ...[
                                     const SizedBox(height: 4),
                                     Text(
                                       hint,
