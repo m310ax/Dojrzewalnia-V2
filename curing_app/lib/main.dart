@@ -109,6 +109,20 @@ class _MainScreenState extends State<MainScreen> {
     setState(() => deviceRevision++);
   }
 
+  Future<void> _handleLogout() async {
+    await _auth.logout();
+    MqttService().disconnect();
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      index = 0;
+      deviceRevision++;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_auth.token == null || _auth.token!.isEmpty) {
@@ -125,7 +139,7 @@ class _MainScreenState extends State<MainScreen> {
         key: ValueKey('devices-$deviceRevision'),
         onDevicesChanged: _handleDevicesChanged,
       ),
-      const SettingsPage(),
+      SettingsPage(onLogout: _handleLogout),
     ];
 
     return Scaffold(

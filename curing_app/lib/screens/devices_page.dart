@@ -68,12 +68,18 @@ class _DevicesPageState extends State<DevicesPage> {
           children: [
             TextField(
               controller: idController,
-              decoration: const InputDecoration(labelText: 'ID urządzenia'),
+              decoration: const InputDecoration(
+                labelText: 'ID urządzenia',
+                hintText: 'np. esp1',
+              ),
             ),
             const SizedBox(height: 12),
             TextField(
               controller: nameController,
-              decoration: const InputDecoration(labelText: 'Nazwa urządzenia'),
+              decoration: const InputDecoration(
+                labelText: 'Nazwa urządzenia',
+                hintText: 'opcjonalnie, domyślnie użyje ID',
+              ),
             ),
           ],
         ),
@@ -99,12 +105,12 @@ class _DevicesPageState extends State<DevicesPage> {
       return;
     }
 
-    if (id.isEmpty || name.isEmpty) {
+    if (id.isEmpty) {
       if (!mounted) {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Podaj ID i nazwę urządzenia')),
+        const SnackBar(content: Text('Podaj ID urządzenia')),
       );
       return;
     }

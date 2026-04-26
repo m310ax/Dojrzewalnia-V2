@@ -139,12 +139,15 @@ class ApiService {
     return _decodeList(response.body, 'Nieprawidłowa lista urządzeń');
   }
 
-  Future<void> addDevice(String id, String name) async {
+  Future<void> addDevice(String id, [String? name]) async {
     final response = await _send(
       http.post(
         Uri.parse('$baseUrl/devices'),
         headers: _headers(includeJson: true),
-        body: jsonEncode({'id': id, 'name': name}),
+        body: jsonEncode({
+          'id': id,
+          if (name != null && name.trim().isNotEmpty) 'name': name.trim(),
+        }),
       ),
       'POST /devices',
     );

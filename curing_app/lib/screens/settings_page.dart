@@ -4,7 +4,9 @@ import '../mqtt_service.dart';
 import '../widgets/glass_card.dart';
 
 class SettingsPage extends StatefulWidget {
-  const SettingsPage({super.key});
+  const SettingsPage({super.key, required this.onLogout});
+
+  final Future<void> Function() onLogout;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -19,6 +21,7 @@ class _SettingsPageState extends State<SettingsPage> {
   double airInterval = 10;
   String profile = 'AUTO';
   bool _contentVisible = false;
+  bool _isLoggingOut = false;
 
   @override
   void initState() {
@@ -99,6 +102,39 @@ class _SettingsPageState extends State<SettingsPage> {
       ),
     );
     setState(() {});
+  }
+
+  Future<void> _logout() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Wylogowanie'),
+        content: const Text('Czy na pewno chcesz się wylogować?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Anuluj'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Wyloguj'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) {
+      return;
+    }
+
+    setState(() => _isLoggingOut = true);
+    await widget.onLogout();
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() => _isLoggingOut = false);
   }
 
   Widget _sliderField({
@@ -232,6 +268,12 @@ class _SettingsPageState extends State<SettingsPage> {
                 onPressed: send,
                 icon: const Icon(Icons.save_outlined),
                 label: const Text('ZAPISZ'),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: _isLoggingOut ? null : _logout,
+                icon: const Icon(Icons.logout),
+                label: Text(_isLoggingOut ? 'Wylogowywanie...' : 'WYLOGUJ'),
               ),
             ],
           ),

@@ -208,13 +208,22 @@ def login():
 def add_device():
     uid = get_jwt_identity()
     data = request.get_json(force=True)
-    error = validate_fields(data, ["id", "name"])
+    error = validate_fields(data, ["id"])
     if error:
         return jsonify({"error": error}), 400
 
+    raw_name = data.get("name", "")
+    if raw_name is None:
+        raw_name = ""
+    if not isinstance(raw_name, str):
+        return jsonify({"error": "Field 'name' must be a string"}), 400
+
+    device_id = data["id"].strip()
+    device_name = raw_name.strip() or device_id
+
     c.execute(
         "INSERT OR REPLACE INTO devices (id, name, owner_id) VALUES (?, ?, ?)",
-        (data["id"].strip(), data["name"].strip(), uid),
+        (device_id, device_name, uid),
     )
     conn.commit()
     return jsonify({"status": "OK"})
