@@ -6,6 +6,7 @@
 #include "wifi_manager.h"
 #include "mqtt_manager.h"
 #include "sensors.h"
+#include "server_sync.h"
 #include "control.h"
 
 unsigned long lastSend = 0;
@@ -22,6 +23,7 @@ void setup() {
   setupSensors();
   initDisplay();
   setupWiFi();
+  setupServerSync();
   setupOTA();
   setupMQTT();
   setupApiServer();
@@ -40,7 +42,9 @@ void loop() {
 
   float temp = readTemp();
   float hum  = readHum();
+  serverSyncLoop(temp, hum);
 
+  addToHistory(temp, hum);
   controlLogic(temp, hum);
   apiServerLoop(temp, hum);
   updateDisplay(temp, hum);

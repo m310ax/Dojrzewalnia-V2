@@ -10,6 +10,8 @@ BROKER = os.environ.get("AUTO_CONTROL_BROKER", "localhost")
 PORT = int(os.environ.get("AUTO_CONTROL_PORT", "30345"))
 DEVICE_ID = os.environ.get("AUTO_CONTROL_DEVICE_ID", "ESP123")
 TARGET_TEMP = float(os.environ.get("AUTO_CONTROL_TARGET_TEMP", "14"))
+CONTROL_TOPIC = f"devices/{DEVICE_ID}/control"
+DATA_TOPIC = f"devices/{DEVICE_ID}/data"
 
 ai = AIController()
 temp_history = []
@@ -22,16 +24,19 @@ def _normalize_bool(value):
     return str(value).strip().lower() in {"1", "true", "on", "yes"}
 
 
-def _publish_heater(enabled):
-    client.publish(f"devices/{DEVICE_ID}/control/heater", "1" if enabled else "0")
+def _publish_cooling(enabled):
+    client.publish(
+        CONTROL_TOPIC,
+        json.dumps({"device_id": DEVICE_ID, "cooling": bool(enabled)}),
+    )
 
 
 def on_connect(client, userdata, flags, rc):
     if rc != 0:
         raise RuntimeError(f"MQTT connection failed with code {rc}")
 
-    client.subscribe(f"devices/{DEVICE_ID}/data")
-    client.subscribe(f"devices/{DEVICE_ID}/control/ai")
+    client.subscribe(DATA_TOPIC)
+    client.subscribe(CONTROL_TOPIC)
     print(f"Auto control connected for {DEVICE_ID}")
 
 
@@ -40,16 +45,28 @@ def on_message(client, userdata, msg):
 
     payload_text = msg.payload.decode(errors="ignore")
 
-    if msg.topic == f"devices/{DEVICE_ID}/control/ai":
-        ai_enabled = _normalize_bool(payload_text)
-        if not ai_enabled:
-            _publish_heater(False)
-        print(f"AI CONTROL: {'ON' if ai_enabled else 'OFF'}")
-        return
-
     try:
         payload = json.loads(payload_text)
     except json.JSONDecodeError:
+        return
+
+    if msg.topic == CONTROL_TOPIC:
+        if not isinstance(payload, dict):
+            return
+
+        if "ai" in payload:
+            ai_enabled = _normalize_bool(payload["ai"])
+
+        mode = str(payload.get("mode") or "").strip().lower()
+        if mode == "ai":
+            ai_enabled = True
+        elif mode in {"auto", "manual"}:
+            ai_enabled = False
+
+        if not ai_enabled:
+            _publish_cooling(False)
+
+        print(f"AI CONTROL: {'ON' if ai_enabled else 'OFF'}")
         return
 
     temp_value = payload.get("temp")
@@ -71,13 +88,14 @@ def on_message(client, userdata, msg):
         return
 
     new_target = ai.recommend_target(temp_history, TARGET_TEMP)
+    future_temp = temp + ai.predict_temp_rise(temp_history) * 10
 
-    if temp < new_target:
-        _publish_heater(True)
+    if future_temp > new_target:
+        _publish_cooling(True)
     else:
-        _publish_heater(False)
+        _publish_cooling(False)
 
-    print(f"TEMP: {temp} | TARGET: {new_target}")
+    print(f"TEMP: {temp} | FUTURE: {future_temp:.2f} | TARGET: {new_target}")
 
 
 client.on_connect = on_connect

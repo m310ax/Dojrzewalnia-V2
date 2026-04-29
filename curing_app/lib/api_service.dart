@@ -156,6 +156,39 @@ class ApiService {
     return _decodeList(response.body, 'Nieprawidłowa lista wykrytych urządzeń');
   }
 
+  Future<List<String>> getDiscovered() async {
+    final response = await _send(
+      http.get(Uri.parse('$baseUrl/discovered'), headers: _headers()),
+      'GET /discovered',
+    );
+
+    _ensureSuccess(response, 'Nie udało się pobrać wykrytych urządzeń');
+
+    final payload = jsonDecode(response.body);
+    if (payload is! List<dynamic>) {
+      throw ApiException('Nieprawidłowa lista wykrytych urządzeń');
+    }
+
+    return payload
+        .map((item) {
+          if (item is String) {
+            return item;
+          }
+
+          if (item is Map<String, dynamic>) {
+            return item['id']?.toString() ?? '';
+          }
+
+          if (item is Map) {
+            return item['id']?.toString() ?? '';
+          }
+
+          return '';
+        })
+        .where((id) => id.isNotEmpty)
+        .toList();
+  }
+
   Future<void> addDevice(String id, [String? name]) async {
     final response = await _send(
       http.post(

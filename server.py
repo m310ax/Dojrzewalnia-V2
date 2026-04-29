@@ -4,6 +4,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from collections import defaultdict, deque
 
 import paho.mqtt.client as mqtt
 import requests
@@ -98,6 +99,19 @@ CREATE TABLE IF NOT EXISTS pid_state (
 """
 )
 
+c.execute(
+    """
+CREATE TABLE IF NOT EXISTS pid_config (
+ device_id TEXT PRIMARY KEY,
+ owner_id TEXT NOT NULL,
+ kp REAL NOT NULL DEFAULT 2.0,
+ ki REAL NOT NULL DEFAULT 0.1,
+ kd REAL NOT NULL DEFAULT 1.0,
+ updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+"""
+)
+
 conn.commit()
 
 scenes = {
@@ -108,8 +122,8 @@ scenes = {
 
 ai_scenes = {"ai_on", "ai_off"}
 
-MQTT_SERVER = os.environ.get("MQTT_SERVER", "srv22.mikr.us")
-MQTT_PORT = int(os.environ.get("MQTT_PORT", "20552"))
+MQTT_SERVER = os.environ.get("MQTT_SERVER", "yasmin345.mikrus.xyz")
+MQTT_PORT = int(os.environ.get("MQTT_PORT", "30345"))
 MQTT_USERNAME = os.environ.get("MQTT_USERNAME", "curing_user")
 MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD", "mocne")
 MQTT_TOPIC = "devices/+/#"
@@ -118,9 +132,24 @@ device_data = {}
 device_data_lock = threading.Lock()
 available_devices = {}
 available_devices_lock = threading.Lock()
+
+PID_CYCLE_TIME_SECONDS = 30.0
+PID_AUTOTUNE_SAMPLES = 30
+PID_AUTOTUNE_INTERVAL_SECONDS = 2.0
 mqtt_client = None
 mqtt_started = False
 mqtt_start_lock = threading.Lock()
+AI_DEVICE_BEARER_TOKEN = os.environ.get("AI_DEVICE_BEARER_TOKEN", "SECRET123")
+ai_device_state = {}
+ai_history = defaultdict(lambda: deque(maxlen=120))
+
+
+def require_device_token():
+    auth_header = (request.headers.get("Authorization") or "").strip()
+    expected = f"Bearer {AI_DEVICE_BEARER_TOKEN}"
+    if auth_header != expected:
+        return jsonify({"error": "unauthorized"}), 401
+    return None
 
 
 def _normalize_device_value(logical_topic, payload):
@@ -149,6 +178,8 @@ def _normalize_device_value(logical_topic, payload):
 def _device_field_name(logical_topic):
     field_map = {
         "data": "data",
+        "status": "status",
+        "autotune": "autotune_status",
         "curing/device/id": "device_runtime_id",
         "curing/temp": "temp",
         "curing/humidity": "humidity",
@@ -162,6 +193,7 @@ def _device_field_name(logical_topic):
         "curing/set/hum_max": "hum_max",
         "curing/set/profile": "profile",
         "curing/mode": "mode",
+        "control/mode": "mode",
         "control/ai": "ai_enabled",
     }
     return field_map.get(logical_topic, logical_topic.replace("/", "_"))
@@ -173,6 +205,247 @@ def _update_device_snapshot(device_id, **values):
         snapshot.update(values)
         snapshot["_updated_at"] = int(time.time())
         device_data[device_id] = snapshot
+
+
+def _touch_discovered_device(device_id, ip=None, rssi=None):
+    normalized_device_id = str(device_id or "").strip()
+    if not normalized_device_id:
+        return
+
+    with available_devices_lock:
+        existing = dict(available_devices.get(normalized_device_id, {}))
+        available_devices[normalized_device_id] = {
+            "id": normalized_device_id,
+            "ip": ip if ip is not None else existing.get("ip"),
+            "rssi": rssi if rssi is not None else existing.get("rssi"),
+            "first_seen": existing.get("first_seen", time.time()),
+            "last_seen": time.time(),
+        }
+
+
+def _publish_raw_topic(topic, payload):
+    start_mqtt_listener()
+    client = mqtt_client
+    if client is None:
+        return False
+
+    result = client.publish(topic, payload)
+    return result.rc == mqtt.MQTT_ERR_SUCCESS
+
+
+def _publish_autotune_status(device_id, status, **extra):
+    payload = json.dumps({"device_id": device_id, "status": status, **extra})
+    _publish_raw_topic(f"devices/{device_id}/autotune", payload)
+    _update_device_snapshot(device_id, autotune_status=status, **extra)
+
+
+def get_pid_coefficients(device_id):
+    c.execute(
+        "SELECT kp, ki, kd FROM pid_config WHERE device_id=?",
+        (device_id,),
+    )
+    row = c.fetchone()
+    if row is None:
+        return {"kp": 2.0, "ki": 0.1, "kd": 1.0}
+
+    return {"kp": float(row[0]), "ki": float(row[1]), "kd": float(row[2])}
+
+
+def save_pid_coefficients(device_id, owner_id, kp, ki, kd):
+    c.execute(
+        """
+        INSERT OR REPLACE INTO pid_config (device_id, owner_id, kp, ki, kd, updated_at)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """,
+        (device_id, owner_id, float(kp), float(ki), float(kd)),
+    )
+    conn.commit()
+    return get_pid_coefficients(device_id)
+
+
+def get_live_snapshot(device_id):
+    with device_data_lock:
+        return dict(device_data.get(device_id, {}))
+
+
+def autotune_pid(device_id, owner_id):
+    history = []
+    _publish_autotune_status(device_id, "running")
+
+    command_ok, command_result = publish_device_command(device_id, "cooling", True)
+    if not command_ok:
+        _publish_autotune_status(device_id, "error", reason=command_result)
+        return {"status": "error", "reason": command_result}
+
+    try:
+        for _ in range(PID_AUTOTUNE_SAMPLES):
+            snapshot = get_live_snapshot(device_id)
+            temp_value = snapshot.get("temp", snapshot.get("data", {}).get("temp"))
+            try:
+                history.append(float(temp_value))
+            except (TypeError, ValueError, AttributeError):
+                pass
+            time.sleep(PID_AUTOTUNE_INTERVAL_SECONDS)
+    finally:
+        publish_device_command(device_id, "cooling", False)
+
+    if len(history) < 5:
+        _publish_autotune_status(device_id, "error", reason="not_enough_samples")
+        return {"status": "error", "reason": "not_enough_samples", "samples": len(history)}
+
+    t_max = max(history)
+    t_min = min(history)
+    ku = max((t_max - t_min) * 10.0, 0.1)
+    tu = max(len(history) * PID_AUTOTUNE_INTERVAL_SECONDS, 1.0)
+
+    kp = 0.6 * ku
+    ki = 2.0 * kp / tu
+    kd = kp * tu / 8.0
+    coeffs = save_pid_coefficients(device_id, owner_id, kp, ki, kd)
+    _publish_autotune_status(device_id, "done", **coeffs)
+
+    return {
+        "status": "ok",
+        "device_id": device_id,
+        "samples": len(history),
+        "range": round(t_max - t_min, 3),
+        **coeffs,
+    }
+
+
+def control_humidity(device_id, current_humidity):
+    targets = get_current_device_targets(device_id)
+    target_hum = float(targets["hum"])
+    humidifier_on = float(current_humidity) < target_hum
+    command_ok, command_result = publish_device_command(
+        device_id,
+        "humidifier",
+        humidifier_on,
+    )
+    if not command_ok:
+        return {"status": "error", "reason": command_result}
+
+    return {
+        "status": "ok",
+        "target_hum": round(target_hum, 1),
+        "humidifier": humidifier_on,
+    }
+
+
+def apply_device_mode(owner_id, device_id, mode, target_temp=None):
+    normalized_mode = str(mode or "").strip().lower()
+    if normalized_mode not in {"auto", "manual", "ai"}:
+        return False, {"error": "device_id and mode are required"}, 400
+
+    if normalized_mode == "auto":
+        if not isinstance(target_temp, (int, float)):
+            return False, {"error": "target_temp must be numeric in auto mode"}, 400
+        normalized_target = _clamp(float(target_temp), 0.0, 25.0)
+    elif isinstance(target_temp, (int, float)):
+        normalized_target = _clamp(float(target_temp), 0.0, 25.0)
+    else:
+        normalized_target = None
+
+    c.execute(
+        """
+        INSERT OR REPLACE INTO pid_modes (device_id, owner_id, mode, target_temp, updated_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """,
+        (device_id, owner_id, normalized_mode, normalized_target),
+    )
+    conn.commit()
+
+    if normalized_mode == "manual":
+        clear_pid_state(device_id)
+        released, details = release_pid_overrides(device_id)
+        if not released:
+            return False, {"error": details}, 503
+        _update_device_snapshot(device_id, ai_enabled=False)
+        return True, {"status": "OK", "device_id": device_id, "mode": normalized_mode}, 200
+
+    if normalized_mode == "ai":
+        command_ok, command_result = publish_device_command(device_id, "mode", normalized_mode)
+        if not command_ok:
+            return False, {"error": command_result}, 503
+        _update_device_snapshot(device_id, mode="ai", ai_enabled=True)
+        return True, {"status": "OK", "device_id": device_id, "mode": normalized_mode}, 200
+
+    command_ok, command_result = publish_device_command(device_id, "mode", normalized_mode)
+    if not command_ok:
+        return False, {"error": command_result}, 503
+
+    pid_result = run_pid_control(device_id, normalized_target)
+    return True, {
+        "status": "OK",
+        "device_id": device_id,
+        "mode": normalized_mode,
+        "target_temp": normalized_target,
+        "pid": pid_result,
+    }, 200
+
+
+def _coerce_control_bool(value):
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, (int, float)):
+        return value != 0
+
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "on", "high", "yes"}:
+            return True
+        if normalized in {"0", "false", "off", "low", "no"}:
+            return False
+
+    return None
+
+
+def _build_control_payload(device_id, logical_topic, value):
+    normalized_topic = str(logical_topic or "").strip().lower()
+    alias_map = {
+        "cooling": "control/cool",
+        "humidifier": "control/humidifier",
+        "fan": "control/fan",
+    }
+    normalized_topic = alias_map.get(normalized_topic, normalized_topic)
+    payload = {"device_id": device_id}
+
+    if normalized_topic in {"mode", "control/mode"}:
+        mode = str(value).strip().lower()
+        if mode not in {"auto", "manual", "ai"}:
+            return None
+        payload["mode"] = mode
+        return payload
+
+    if normalized_topic == "control/ai":
+        ai_enabled = _coerce_control_bool(value)
+        if ai_enabled is None:
+            return None
+        payload["ai"] = ai_enabled
+        payload["mode"] = "ai" if ai_enabled else "manual"
+        return payload
+
+    control_field_map = {
+        "control/cool": "cooling",
+        "control/heater": "cooling",
+        "control/hum": "humidifier",
+        "control/humifier": "humidifier",
+        "control/humidifier": "humidifier",
+        "control/fan": "fan",
+        "control/dehumidifier": "fan",
+    }
+
+    control_field = control_field_map.get(normalized_topic)
+    if control_field is None:
+        return None
+
+    bool_value = _coerce_control_bool(value)
+    if bool_value is None:
+        return None
+
+    payload[control_field] = bool_value
+    return payload
 
 
 def store_device_message(topic, payload):
@@ -189,15 +462,11 @@ def store_device_message(topic, payload):
         if not device_id:
             return False
 
-        with available_devices_lock:
-            existing = dict(available_devices.get(device_id, {}))
-            available_devices[device_id] = {
-                "id": device_id,
-                "ip": data_payload.get("ip"),
-                "rssi": data_payload.get("rssi"),
-                "first_seen": existing.get("first_seen", time.time()),
-                "last_seen": time.time(),
-            }
+        _touch_discovered_device(
+            device_id,
+            ip=data_payload.get("ip"),
+            rssi=data_payload.get("rssi"),
+        )
 
         return True
 
@@ -219,6 +488,10 @@ def store_device_message(topic, payload):
             if not isinstance(data_payload, dict):
                 return False
 
+            data_payload["device_id"] = str(
+                data_payload.get("device_id") or device_id
+            ).strip() or device_id
+
             if "temp" in data_payload:
                 try:
                     snapshot["temp"] = float(data_payload["temp"])
@@ -236,6 +509,7 @@ def store_device_message(topic, payload):
                 snapshot["humidity"] = normalized_hum
 
             snapshot["data"] = data_payload
+            _touch_discovered_device(device_id)
         else:
             if not logical_topic.startswith(("curing/", "control/")):
                 return False
@@ -311,20 +585,16 @@ def clear_pid_state(device_id):
 
 
 def release_pid_overrides(device_id):
-    cool_ok, cool_result = publish_device_command(device_id, "control/cool", "auto")
-    if not cool_ok:
-        return False, cool_result
-
-    fan_ok, fan_result = publish_device_command(device_id, "control/fan", "auto")
-    if not fan_ok:
-        return False, fan_result
+    released, release_result = publish_device_command(device_id, "mode", "manual")
+    if not released:
+        return False, release_result
 
     return True, "released"
 
 
 def run_pid_control(device_id, target_temp):
     c.execute(
-        "SELECT temp FROM telemetry_history WHERE device_id=? ORDER BY id DESC LIMIT 8",
+        "SELECT temp, hum FROM telemetry_history WHERE device_id=? ORDER BY id DESC LIMIT 8",
         (device_id,),
     )
     rows = list(reversed(c.fetchall()))
@@ -332,16 +602,17 @@ def run_pid_control(device_id, target_temp):
         return {"status": "skipped", "reason": "not_enough_history"}
 
     current_temp = float(rows[-1][0])
+    current_hum = float(rows[-1][1])
     c.execute(
         "SELECT integral, last_error FROM pid_state WHERE device_id=?",
         (device_id,),
     )
     previous_state = c.fetchone()
 
-    kp = 2.0
-    ki = 0.1
-    kd = 1.0
-    threshold = 0.35
+    coeffs = get_pid_coefficients(device_id)
+    kp = coeffs["kp"]
+    ki = coeffs["ki"]
+    kd = coeffs["kd"]
 
     error = current_temp - float(target_temp)
     integral = _clamp((previous_state[0] if previous_state else 0.0) + error, -100.0, 100.0)
@@ -349,13 +620,18 @@ def run_pid_control(device_id, target_temp):
     derivative = error - last_error
     output = kp * error + ki * integral + kd * derivative
 
-    cool_on = output > threshold
-    fan_on = output > (threshold * 0.5)
+    power = _clamp(max(output, 0.0) * 25.0, 0.0, 100.0)
+    on_time = PID_CYCLE_TIME_SECONDS * (power / 100.0)
+    off_time = PID_CYCLE_TIME_SECONDS - on_time
+    cycle_position = time.time() % PID_CYCLE_TIME_SECONDS
+
+    cool_on = power > 0 and cycle_position < on_time
+    fan_on = power > 5.0
 
     cool_ok, cool_result = publish_device_command(
         device_id,
         "control/cool",
-        1 if cool_on else 0,
+        cool_on,
     )
     if not cool_ok:
         return {"status": "error", "reason": cool_result}
@@ -363,7 +639,7 @@ def run_pid_control(device_id, target_temp):
     fan_ok, fan_result = publish_device_command(
         device_id,
         "control/fan",
-        1 if fan_on else 0,
+        fan_on,
     )
     if not fan_ok:
         return {"status": "error", "reason": fan_result}
@@ -373,18 +649,27 @@ def run_pid_control(device_id, target_temp):
         INSERT OR REPLACE INTO pid_state (device_id, integral, last_error, last_output, updated_at)
         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
         """,
-        (device_id, integral, error, output),
+        (device_id, integral, error, power),
     )
     conn.commit()
+
+    humidity_result = control_humidity(device_id, current_hum)
 
     return {
         "status": "ok",
         "device_id": device_id,
         "current_temp": round(current_temp, 2),
+        "current_hum": round(current_hum, 2),
         "target_temp": round(float(target_temp), 2),
         "output": round(output, 3),
+        "power": round(power, 1),
+        "cycle_time": PID_CYCLE_TIME_SECONDS,
+        "on_time": round(on_time, 2),
+        "off_time": round(off_time, 2),
+        "coefficients": coeffs,
         "cool": cool_on,
         "fan": fan_on,
+        "humidity": humidity_result,
     }
 
 
@@ -394,15 +679,60 @@ def publish_device_command(device_id, logical_topic, value):
     if client is None:
         return False, "MQTT client unavailable"
 
-    if not logical_topic.startswith(("curing/", "control/")):
-        return False, "Invalid control topic"
+    normalized_topic = str(logical_topic or "").strip().lower()
+    if normalized_topic.startswith("curing/"):
+        scoped_topic = f"devices/{device_id}/{normalized_topic}"
+        result = client.publish(scoped_topic, str(value))
+        if result.rc != mqtt.MQTT_ERR_SUCCESS:
+            return False, "Nie udało się wysłać komendy MQTT"
+        return True, scoped_topic
 
-    scoped_topic = f"devices/{device_id}/{logical_topic}"
-    result = client.publish(scoped_topic, str(value))
-    if result.rc != mqtt.MQTT_ERR_SUCCESS:
-        return False, "Nie udało się wysłać komendy MQTT"
+    control_payload = _build_control_payload(device_id, normalized_topic, value)
+    if control_payload is None:
+        return False, "Invalid control topic or value"
 
-    return True, scoped_topic
+    published_topics = []
+    mode_topics = {
+        "mode": "control/mode",
+        "ai": "control/ai",
+    }
+    control_fields = {
+        "cooling": "control/cool",
+        "humidifier": "control/humidifier",
+        "fan": "control/fan",
+    }
+
+    for field, scoped_suffix in mode_topics.items():
+        if field not in control_payload:
+            continue
+
+        scoped_topic = f"devices/{device_id}/{scoped_suffix}"
+        field_value = control_payload[field]
+        payload = str(field_value).lower() if isinstance(field_value, bool) else str(field_value)
+        result = client.publish(scoped_topic, payload)
+        if result.rc != mqtt.MQTT_ERR_SUCCESS:
+            return False, "Nie udało się wysłać komendy MQTT"
+        published_topics.append(scoped_topic)
+
+    for field, scoped_suffix in control_fields.items():
+        if field not in control_payload:
+            continue
+
+        scoped_topic = f"devices/{device_id}/{scoped_suffix}"
+        field_value = control_payload[field]
+        payload = str(field_value).lower() if isinstance(field_value, bool) else str(field_value)
+        result = client.publish(scoped_topic, payload)
+        if result.rc != mqtt.MQTT_ERR_SUCCESS:
+            return False, "Nie udało się wysłać komendy MQTT"
+        published_topics.append(scoped_topic)
+
+    if not published_topics:
+        return False, "Invalid control topic or value"
+
+    if len(published_topics) == 1:
+        return True, published_topics[0]
+
+    return True, published_topics
 
 
 def get_current_device_targets(device_id):
@@ -532,6 +862,54 @@ def record_telemetry(device_id, owner_id, temp, hum):
     conn.commit()
 
 
+def learn_ai_settings(device_id, hum, hum_rate, proposed_kp, proposed_target_hum):
+    state = ai_device_state.setdefault(
+        device_id,
+        {
+            "kp": 2.0,
+            "targetHum": 80.0,
+            "updatedAt": int(time.time()),
+        },
+    )
+
+    kp = float(state.get("kp", 2.0))
+    target_hum = float(state.get("targetHum", 80.0))
+
+    if isinstance(proposed_kp, (int, float)):
+        kp = float(proposed_kp)
+    if isinstance(proposed_target_hum, (int, float)):
+        target_hum = float(proposed_target_hum)
+
+    if hum_rate > 1.5:
+        kp *= 0.9
+    elif hum_rate < 0.3:
+        kp *= 1.1
+
+    if hum > target_hum + 3.0:
+        kp *= 0.8
+        target_hum -= 0.5
+    elif hum < target_hum - 5.0:
+        kp *= 1.2
+        target_hum += 0.5
+
+    if hum > 85.0:
+        target_hum -= 0.2
+    elif hum < 75.0:
+        target_hum += 0.2
+
+    kp = max(0.5, min(5.0, kp))
+    target_hum = max(50.0, min(95.0, target_hum))
+
+    state.update(
+        {
+            "kp": round(kp, 3),
+            "targetHum": round(target_hum, 2),
+            "updatedAt": int(time.time()),
+        }
+    )
+    return state
+
+
 @app.before_request
 def ensure_mqtt_listener_started():
     start_mqtt_listener()
@@ -642,14 +1020,17 @@ def get_devices():
 
 
 @app.route("/devices/available", methods=["GET"])
-@jwt_required()
 def get_available_devices():
     return jsonify(_serialize_discovered_devices())
 
 
 @app.route("/devices/discovered", methods=["GET"])
-@jwt_required()
 def get_discovered_devices():
+    return jsonify(_serialize_discovered_devices())
+
+
+@app.route("/discovered", methods=["GET"])
+def get_discovered_devices_alias():
     return jsonify(_serialize_discovered_devices())
 
 
@@ -687,46 +1068,19 @@ def set_mode():
 
     device_id = str(data.get("device_id") or "").strip()
     mode = str(data.get("mode") or "").strip().lower()
-    if not device_id or mode not in {"auto", "manual"}:
+    if not device_id or mode not in {"auto", "manual", "ai"}:
         return jsonify({"error": "device_id and mode are required"}), 400
 
     if not user_owns_device(uid, device_id):
         return jsonify({"error": "Nie znaleziono urządzenia"}), 404
 
-    target_temp = data.get("target_temp")
-    if mode == "auto":
-        if not isinstance(target_temp, (int, float)):
-            return jsonify({"error": "target_temp must be numeric in auto mode"}), 400
-        target_temp = _clamp(float(target_temp), 0.0, 25.0)
-    else:
-        target_temp = None
-
-    c.execute(
-        """
-        INSERT OR REPLACE INTO pid_modes (device_id, owner_id, mode, target_temp, updated_at)
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-        """,
-        (device_id, uid, mode, target_temp),
+    success, payload, status_code = apply_device_mode(
+        uid,
+        device_id,
+        mode,
+        data.get("target_temp"),
     )
-    conn.commit()
-
-    if mode == "manual":
-        clear_pid_state(device_id)
-        released, details = release_pid_overrides(device_id)
-        if not released:
-            return jsonify({"error": details}), 503
-        return jsonify({"status": "OK", "device_id": device_id, "mode": mode})
-
-    pid_result = run_pid_control(device_id, target_temp)
-    return jsonify(
-        {
-            "status": "OK",
-            "device_id": device_id,
-            "mode": mode,
-            "target_temp": target_temp,
-            "pid": pid_result,
-        }
-    )
+    return jsonify(payload), status_code
 
 
 @app.route("/device_data", methods=["POST"])
@@ -799,6 +1153,20 @@ def control_device():
     value = data.get("value")
     if value is None:
         return jsonify({"error": "Field 'value' is required"}), 400
+
+    normalized_topic = data["topic"].strip().lower()
+    if normalized_topic == "mode":
+        success, payload, status_code = apply_device_mode(uid, device_id, value)
+        return jsonify(payload), status_code
+
+    if normalized_topic == "autotune":
+        enabled = _coerce_control_bool(value)
+        if enabled is not True:
+            return jsonify({"error": "autotune requires true value"}), 400
+
+        result = autotune_pid(device_id, uid)
+        status_code = 200 if result.get("status") == "ok" else 503
+        return jsonify(result), status_code
 
     success, details = publish_device_command(
         device_id,
@@ -973,6 +1341,66 @@ def get_ai_control():
             "samples": len(temp_history),
         }
     )
+
+
+@app.route("/ai/device/state", methods=["POST"])
+def ai_device_state_update():
+    unauthorized = require_device_token()
+    if unauthorized is not None:
+        return unauthorized
+
+    data = request.get_json(force=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid JSON payload"}), 400
+
+    device_id = str(data.get("deviceId") or "").strip()
+    if not device_id:
+        return jsonify({"error": "deviceId is required"}), 400
+
+    temp = data.get("temp")
+    hum = data.get("hum")
+    hum_rate = data.get("humRate")
+    if not all(isinstance(value, (int, float)) for value in [temp, hum, hum_rate]):
+        return jsonify({"error": "temp, hum and humRate must be numeric"}), 400
+
+    ai_history[device_id].append(
+        {
+            "temp": float(temp),
+            "hum": float(hum),
+            "rate": float(hum_rate),
+            "time": int(time.time()),
+        }
+    )
+
+    state = learn_ai_settings(
+        device_id,
+        float(hum),
+        float(hum_rate),
+        data.get("kp"),
+        data.get("targetHum"),
+    )
+    return jsonify(state)
+
+
+@app.route("/ai/device/settings", methods=["GET"])
+def ai_device_settings():
+    unauthorized = require_device_token()
+    if unauthorized is not None:
+        return unauthorized
+
+    device_id = str(request.args.get("deviceId") or "").strip()
+    if not device_id:
+        return jsonify({"error": "deviceId query parameter is required"}), 400
+
+    state = ai_device_state.setdefault(
+        device_id,
+        {
+            "kp": 2.0,
+            "targetHum": 80.0,
+            "updatedAt": int(time.time()),
+        },
+    )
+    return jsonify(state)
 
 
 @app.route("/scenes", methods=["GET"])

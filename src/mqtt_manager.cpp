@@ -15,8 +15,8 @@ float getHysteresis();
 float getAirTime();
 float getAirInterval();
 String getProfile();
-void setCoolOverride(bool enabled, bool on);
-void setHumOverride(bool enabled, bool on);
+String getOperatingMode();
+bool isAiEnabled();
 
 namespace {
 constexpr float kTempLowerLimit = 0.0F;
@@ -39,7 +39,62 @@ bool humOverrideEnabled = false;
 bool humOverrideState = false;
 bool fanOverrideEnabled = false;
 bool fanOverrideState = true;
+bool aiEnabled = false;
 String deviceId = MQTT_DEVICE_ID;
+
+void publishRetained(const char* logicalTopic, const String& value);
+
+String normalizeModeValue(const String& rawValue) {
+  String normalized = rawValue;
+  normalized.trim();
+  normalized.toLowerCase();
+
+  if (normalized == "ai") {
+    return "ai";
+  }
+
+  if (normalized == "auto") {
+    return "auto";
+  }
+
+  return "manual";
+}
+
+void clearOverrides() {
+  coolOverrideEnabled = false;
+  coolOverrideState = false;
+  humOverrideEnabled = false;
+  humOverrideState = false;
+  fanOverrideEnabled = false;
+  fanOverrideState = true;
+}
+
+bool parseBooleanMessage(const String& rawMessage, bool* value) {
+  String msg = rawMessage;
+  msg.trim();
+  msg.toLowerCase();
+
+  if (msg == "1" || msg == "true" || msg == "on" || msg == "high" || msg == "yes") {
+    *value = true;
+    return true;
+  }
+
+  if (msg == "0" || msg == "false" || msg == "off" || msg == "low" || msg == "no") {
+    *value = false;
+    return true;
+  }
+
+  return false;
+}
+
+void publishControlState() {
+  if (!client.connected()) {
+    return;
+  }
+
+  publishRetained("curing/mode", getOperatingMode());
+  publishRetained("control/ai", isAiEnabled() ? "true" : "false");
+}
 
 String generateDeviceId() {
   static const char charset[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -127,107 +182,6 @@ void loadDeviceId() {
 
 String scopedTopic(const char* logicalTopic) {
   return String("devices/") + deviceId + "/" + logicalTopic;
-}
-
-bool extractJsonStringField(const String& payload, const char* fieldName, String* value) {
-  const String quotedField = String("\"") + fieldName + "\"";
-  const int fieldIndex = payload.indexOf(quotedField);
-  if (fieldIndex < 0) {
-    return false;
-  }
-
-  const int colonIndex = payload.indexOf(':', fieldIndex + quotedField.length());
-  if (colonIndex < 0) {
-    return false;
-  }
-
-  const int startQuoteIndex = payload.indexOf('"', colonIndex + 1);
-  if (startQuoteIndex < 0) {
-    return false;
-  }
-
-  const int endQuoteIndex = payload.indexOf('"', startQuoteIndex + 1);
-  if (endQuoteIndex < 0) {
-    return false;
-  }
-
-  *value = payload.substring(startQuoteIndex + 1, endQuoteIndex);
-  value->trim();
-  return value->length() > 0;
-}
-
-bool extractJsonBoolField(const String& payload, const char* fieldName, bool* value) {
-  const String quotedField = String("\"") + fieldName + "\"";
-  const int fieldIndex = payload.indexOf(quotedField);
-  if (fieldIndex < 0) {
-    return false;
-  }
-
-  const int colonIndex = payload.indexOf(':', fieldIndex + quotedField.length());
-  if (colonIndex < 0) {
-    return false;
-  }
-
-  int valueIndex = colonIndex + 1;
-  while (valueIndex < payload.length() && isspace(static_cast<unsigned char>(payload[valueIndex]))) {
-    ++valueIndex;
-  }
-
-  String rawValue;
-  while (valueIndex < payload.length()) {
-    const char current = payload[valueIndex];
-    if (current == ',' || current == '}') {
-      break;
-    }
-    rawValue += current;
-    ++valueIndex;
-  }
-
-  rawValue.trim();
-  rawValue.toLowerCase();
-  if (rawValue == "true" || rawValue == "1") {
-    *value = true;
-    return true;
-  }
-
-  if (rawValue == "false" || rawValue == "0") {
-    *value = false;
-    return true;
-  }
-
-  return false;
-}
-
-bool handleGlobalControlMessage(const String& payload) {
-  String targetDeviceId;
-  if (!extractJsonStringField(payload, "device_id", &targetDeviceId)) {
-    return false;
-  }
-
-  if (!targetDeviceId.equalsIgnoreCase(deviceId)) {
-    return false;
-  }
-
-  String commandTopic;
-  bool commandValue = false;
-  if (!extractJsonStringField(payload, "topic", &commandTopic) ||
-      !extractJsonBoolField(payload, "value", &commandValue)) {
-    return false;
-  }
-
-  commandTopic.toLowerCase();
-
-  if (commandTopic == "cooling") {
-    setCoolOverride(true, commandValue);
-    return true;
-  }
-
-  if (commandTopic == "humidifier") {
-    setHumOverride(true, commandValue);
-    return true;
-  }
-
-  return false;
 }
 
 String logicalTopicFromScoped(const String& topic) {
@@ -328,7 +282,7 @@ void publishDeviceState(float temp, float hum) {
   publishRetained("curing/set/air_time", String(getAirTime(), 1));
   publishRetained("curing/set/air_interval", String(getAirInterval(), 1));
   publishRetained("curing/set/profile", getProfile());
-  publishRetained("curing/mode", getProfile());
+  publishControlState();
   publishRetained("curing/device/id", deviceId);
   publishRetained("curing/device/ip", String(getLocalIp()));
   publishRetained("curing/device/sensor", isSensorConnected() ? "true" : "false");
@@ -339,6 +293,7 @@ void publishDeviceState(float temp, float hum) {
 float airTime = 10.0;
 float airInterval = 10.0;
 String profile = "AUTO";
+String operatingMode = "manual";
 unsigned long lastReconnectAttempt = 0;
 
 void setTempRange(float minValue, float maxValue) {
@@ -417,6 +372,24 @@ void setProfile(const String& value) {
   profile = value;
 }
 
+void setOperatingMode(const String& value) {
+  operatingMode = normalizeModeValue(value);
+  aiEnabled = operatingMode == "ai";
+  clearOverrides();
+  publishControlState();
+}
+
+void setAiEnabled(bool enabled) {
+  aiEnabled = enabled;
+  if (enabled) {
+    operatingMode = "ai";
+  } else if (operatingMode == "ai") {
+    operatingMode = "manual";
+  }
+  clearOverrides();
+  publishControlState();
+}
+
 void setCoolOverride(bool enabled, bool on) {
   coolOverrideEnabled = enabled;
   coolOverrideState = on;
@@ -468,12 +441,6 @@ void callback(char* topic, byte* payload, unsigned int length) {
   }
 
   String t = String(topic);
-
-  if (t == "devices/control") {
-    handleGlobalControlMessage(msg);
-    return;
-  }
-
   t = logicalTopicFromScoped(t);
 
   if (t == "control/cool") {
@@ -521,6 +488,19 @@ void callback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
+  if (t == "control/mode") {
+    setOperatingMode(msg);
+    return;
+  }
+
+  if (t == "control/ai") {
+    bool enabled = false;
+    if (parseBooleanMessage(msg, &enabled)) {
+      setAiEnabled(enabled);
+    }
+    return;
+  }
+
   if (t == "curing/set/temp") setTargetTemp(msg.toFloat());
   if (t == "curing/set/hum") setTargetHum(msg.toFloat());
   if (t == "curing/set/temp_min") setTempMin(msg.toFloat());
@@ -557,7 +537,6 @@ void reconnect() {
     const String controlTopic = scopedTopic("control/#");
     client.subscribe(commandTopic.c_str());
     client.subscribe(controlTopic.c_str());
-    client.subscribe("devices/control");
     client.publish(statusTopic.c_str(), "online", true);
   }
 }
@@ -600,6 +579,14 @@ float getAirInterval() {
 
 String getProfile() {
   return profile;
+}
+
+String getOperatingMode() {
+  return operatingMode;
+}
+
+bool isAiEnabled() {
+  return aiEnabled;
 }
 
 bool isMqttConnected() {

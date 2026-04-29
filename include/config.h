@@ -26,6 +26,10 @@
 #define MQTT_CLIENT_ID "ESP32"
 #define MQTT_DEVICE_ID "ESP1"
 
+// AI HTTP
+#define AI_SERVER_URL "http://yasmin345.mikrus.xyz:20345"
+#define AI_SERVER_BEARER_TOKEN "SECRET123"
+
 // PINY
 #define RELAY_COOL 5
 #define RELAY_HUM  18
