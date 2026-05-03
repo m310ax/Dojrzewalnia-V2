@@ -56,8 +56,8 @@ bool parseSettingsPayload(const String& payload, float* kpValue, float* targetHu
 
 void applyAiSettings(float kpValue, float targetHum) {
   setCurrentHumidityKp(kpValue);
-  setHumMin(targetHum - 2.0F);
-  setHumMax(targetHum + 2.0F);
+  setTargetHum(targetHum);
+  setHumHysteresis(2.0F);
 }
 
 void sendState(float temp, float hum, float humRate) {

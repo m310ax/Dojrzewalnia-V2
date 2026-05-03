@@ -1,5 +1,6 @@
 import json
 import os
+import queue
 import sqlite3
 import threading
 import time
@@ -8,7 +9,7 @@ from collections import defaultdict, deque
 
 import paho.mqtt.client as mqtt
 import requests
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 from flask_bcrypt import Bcrypt
 from flask_cors import CORS
 from flask_jwt_extended import (
@@ -132,6 +133,8 @@ device_data = {}
 device_data_lock = threading.Lock()
 available_devices = {}
 available_devices_lock = threading.Lock()
+sse_clients = defaultdict(list)
+sse_lock = threading.Lock()
 
 PID_CYCLE_TIME_SECONDS = 30.0
 PID_AUTOTUNE_SAMPLES = 30
@@ -142,6 +145,17 @@ mqtt_start_lock = threading.Lock()
 AI_DEVICE_BEARER_TOKEN = os.environ.get("AI_DEVICE_BEARER_TOKEN", "SECRET123")
 ai_device_state = {}
 ai_history = defaultdict(lambda: deque(maxlen=120))
+
+
+def push_realtime(device_id, payload):
+    with sse_lock:
+        clients = list(sse_clients.get(device_id, []))
+
+    for client_queue in clients:
+        try:
+            client_queue.put_nowait(payload)
+        except Exception:
+            pass
 
 
 def require_device_token():
@@ -157,13 +171,10 @@ def _normalize_device_value(logical_topic, payload):
     if logical_topic in {
         "curing/temp",
         "curing/humidity",
-        "curing/set/temp_min",
-        "curing/set/temp_max",
-        "curing/set/hum_min",
-        "curing/set/hum_max",
         "curing/set/temp",
         "curing/set/hum",
-        "curing/set/hysteresis",
+        "curing/set/temp_hysteresis",
+        "curing/set/hum_hysteresis",
         "curing/set/air_time",
         "curing/set/air_interval",
     }:
@@ -187,10 +198,10 @@ def _device_field_name(logical_topic):
         "curing/device/ip": "device_ip",
         "curing/device/sensor": "sensor",
         "curing/device/wifi": "wifi",
-        "curing/set/temp_min": "temp_min",
-        "curing/set/temp_max": "temp_max",
-        "curing/set/hum_min": "hum_min",
-        "curing/set/hum_max": "hum_max",
+        "curing/set/temp": "target_temp",
+        "curing/set/hum": "target_humidity",
+        "curing/set/temp_hysteresis": "temp_hysteresis",
+        "curing/set/hum_hysteresis": "hum_hysteresis",
         "curing/set/profile": "profile",
         "curing/mode": "mode",
         "control/mode": "mode",
@@ -744,9 +755,12 @@ def get_current_device_targets(device_id):
     if not snapshot:
         return defaults
 
-    temp_value = snapshot.get("temp_max", snapshot.get("temp", defaults["temp"]))
+    temp_value = snapshot.get(
+        "target_temp",
+        snapshot.get("temp", defaults["temp"]),
+    )
     hum_value = snapshot.get(
-        "hum_max",
+        "target_humidity",
         snapshot.get("hum", snapshot.get("humidity", defaults["hum"])),
     )
 
@@ -771,6 +785,21 @@ def _handle_mqtt_connect(client, userdata, flags, rc):
 def _handle_mqtt_message(client, userdata, message):
     payload = message.payload.decode("utf-8", errors="ignore")
     store_device_message(message.topic, payload)
+
+    parts = message.topic.split("/", 2)
+    if len(parts) >= 2 and parts[0] == "devices":
+        device_id = parts[1]
+        snapshot = get_live_snapshot(device_id)
+        push_realtime(
+            device_id,
+            {
+                "device_id": device_id,
+                "topic": message.topic,
+                "payload": payload,
+                "data": snapshot,
+                "time": int(time.time()),
+            },
+        )
 
 
 def start_mqtt_listener():
@@ -1134,6 +1163,48 @@ def latest_device_data():
     )
 
 
+@app.route("/stream", methods=["GET"])
+@jwt_required()
+def stream_device():
+    owner_id = get_jwt_identity()
+    device_id = request.args.get("device_id", "").strip()
+
+    if not device_id:
+        return jsonify({"error": "device_id required"}), 400
+
+    if not user_owns_device(owner_id, device_id):
+        return jsonify({"error": "device not found"}), 404
+
+    client_queue = queue.Queue()
+
+    with sse_lock:
+        sse_clients[device_id].append(client_queue)
+
+    def event_stream():
+        try:
+            yield 'event: connected\ndata: {"status":"ok"}\n\n'
+
+            while True:
+                try:
+                    payload = client_queue.get(timeout=25)
+                    yield f"event: telemetry\\ndata: {json.dumps(payload)}\\n\\n"
+                except queue.Empty:
+                    yield "event: ping\\ndata: {}\\n\\n"
+        finally:
+            with sse_lock:
+                if client_queue in sse_clients[device_id]:
+                    sse_clients[device_id].remove(client_queue)
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.route("/control", methods=["POST"])
 @jwt_required()
 def control_device():
@@ -1457,12 +1528,12 @@ def apply_scene():
 
     temp_ok, temp_result = publish_device_command(
         device_id,
-        "curing/set/temp_max",
+        "curing/set/temp",
         round(float(optimized_temp), 1),
     )
     hum_ok, hum_result = publish_device_command(
         device_id,
-        "curing/set/hum_max",
+        "curing/set/hum",
         round(float(cfg["hum"]), 0),
     )
     if not temp_ok:

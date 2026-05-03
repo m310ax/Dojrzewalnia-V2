@@ -4,9 +4,9 @@
 
 // WIFI
 #define OTA_HOSTNAME "dojrzewalnia-esp32"
-#define OTA_FIRMWARE_VERSION "1.0.0"
-#define OTA_VERSION_URL "https://twojadomena.pl/firmware/version.txt"
-#define OTA_FIRMWARE_URL "https://twojadomena.pl/firmware/firmware.bin"
+#define OTA_FIRMWARE_VERSION "1.0.4"
+#define OTA_VERSION_URL "http://yasmin345.mikrus.xyz:20345/firmware/version.txt"
+#define OTA_FIRMWARE_URL "http://yasmin345.mikrus.xyz:20345/firmware/firmware.bin"
 #define OTA_CHECK_INTERVAL_MS 3600000UL
 #define WIFI_STATIC_IP_1 192
 #define WIFI_STATIC_IP_2 168
@@ -22,18 +22,18 @@
 #define WIFI_SUBNET_4 0
 
 // MQTT
-#define MQTT_PORT 30345
+#define MQTT_PORT 20345
 #define MQTT_CLIENT_ID "ESP32"
-#define MQTT_DEVICE_ID "ESP1"
+#define MQTT_DEVICE_ID "dojrzewalnia-01"
 
 // AI HTTP
 #define AI_SERVER_URL "http://yasmin345.mikrus.xyz:20345"
 #define AI_SERVER_BEARER_TOKEN "SECRET123"
 
 // PINY
-#define RELAY_COOL 5
-#define RELAY_HUM  18
-#define RELAY_FAN  19
+#define RELAY_COOL 25
+#define RELAY_HUM  26
+#define RELAY_FAN  27
 
 // I2C
 #define I2C_SDA 21

@@ -11,6 +11,8 @@ PubSubClient client(espClient);
 
 float getTargetTemp();
 float getTargetHum();
+float getTempHysteresis();
+float getHumHysteresis();
 float getHysteresis();
 float getAirTime();
 float getAirInterval();
@@ -21,7 +23,7 @@ bool isAiEnabled();
 namespace {
 constexpr float kTempLowerLimit = 0.0F;
 constexpr float kTempUpperLimit = 25.0F;
-constexpr float kHumLowerLimit = 50.0F;
+constexpr float kHumLowerLimit = 40.0F;
 constexpr float kHumUpperLimit = 100.0F;
 constexpr const char* kPrefsNamespace = "curing";
 constexpr const char* kDeviceIdKey = "deviceId";
@@ -31,6 +33,10 @@ float tempMin = 0.0F;
 float tempMax = 4.0F;
 float humMin = 78.0F;
 float humMax = 82.0F;
+float targetTemp = 2.0F;
+float targetHum = 80.0F;
+float tempHysteresis = 2.0F;
+float humHysteresis = 2.0F;
 Preferences prefs;
 bool prefsReady = false;
 bool coolOverrideEnabled = false;
@@ -40,6 +46,7 @@ bool humOverrideState = false;
 bool fanOverrideEnabled = false;
 bool fanOverrideState = true;
 bool aiEnabled = false;
+bool suppressRetainedSettingsPublish = false;
 String deviceId = MQTT_DEVICE_ID;
 
 void publishRetained(const char* logicalTopic, const String& value);
@@ -87,6 +94,50 @@ bool parseBooleanMessage(const String& rawMessage, bool* value) {
   return false;
 }
 
+bool nearlyEqual(float left, float right, float epsilon = 0.05F) {
+  return fabsf(left - right) <= epsilon;
+}
+
+bool shouldIgnoreSettingEcho(const String& topic, const String& message) {
+  const float numericValue = message.toFloat();
+
+  if (topic == "curing/set/temp") {
+    return nearlyEqual(getTargetTemp(), numericValue);
+  }
+  if (topic == "curing/set/hum") {
+    return nearlyEqual(getTargetHum(), numericValue);
+  }
+  if (topic == "curing/set/temp_min") {
+    return nearlyEqual(tempMin, numericValue);
+  }
+  if (topic == "curing/set/temp_max") {
+    return nearlyEqual(tempMax, numericValue);
+  }
+  if (topic == "curing/set/hum_min") {
+    return nearlyEqual(humMin, numericValue);
+  }
+  if (topic == "curing/set/hum_max") {
+    return nearlyEqual(humMax, numericValue);
+  }
+  if (topic == "curing/set/temp_hysteresis") {
+    return nearlyEqual(getTempHysteresis(), numericValue);
+  }
+  if (topic == "curing/set/hum_hysteresis") {
+    return nearlyEqual(getHumHysteresis(), numericValue);
+  }
+  if (topic == "curing/set/air_time") {
+    return nearlyEqual(getAirTime(), numericValue);
+  }
+  if (topic == "curing/set/air_interval") {
+    return nearlyEqual(getAirInterval(), numericValue);
+  }
+  if (topic == "curing/set/profile") {
+    return getProfile() == message;
+  }
+
+  return false;
+}
+
 void publishControlState() {
   if (!client.connected()) {
     return;
@@ -94,6 +145,26 @@ void publishControlState() {
 
   publishRetained("curing/mode", getOperatingMode());
   publishRetained("control/ai", isAiEnabled() ? "true" : "false");
+}
+
+void publishRetainedSettingsState() {
+  if (!client.connected()) {
+    return;
+  }
+
+  // Clear legacy retained topics so reconnects cannot reapply stale min/max values.
+  publishRetained("curing/set/temp_min", "");
+  publishRetained("curing/set/temp_max", "");
+  publishRetained("curing/set/hum_min", "");
+  publishRetained("curing/set/hum_max", "");
+  publishRetained("curing/set/hysteresis", "");
+  publishRetained("curing/set/temp", String(getTargetTemp(), 1));
+  publishRetained("curing/set/hum", String(getTargetHum(), 1));
+  publishRetained("curing/set/temp_hysteresis", String(getTempHysteresis(), 1));
+  publishRetained("curing/set/hum_hysteresis", String(getHumHysteresis(), 1));
+  publishRetained("curing/set/air_time", String(getAirTime(), 1));
+  publishRetained("curing/set/air_interval", String(getAirInterval(), 1));
+  publishRetained("curing/set/profile", getProfile());
 }
 
 String generateDeviceId() {
@@ -125,6 +196,22 @@ void normalizeHumRange(float* minValue, float* maxValue) {
   }
 }
 
+void syncTempRangeFromTarget() {
+  targetTemp = constrain(targetTemp, kTempLowerLimit, kTempUpperLimit);
+  tempHysteresis = max(tempHysteresis, 0.0F);
+  tempMin = targetTemp;
+  tempMax = constrain(targetTemp + tempHysteresis, targetTemp, kTempUpperLimit);
+  tempHysteresis = tempMax - targetTemp;
+}
+
+void syncHumRangeFromTarget() {
+  targetHum = constrain(targetHum, kHumLowerLimit, kHumUpperLimit);
+  humHysteresis = max(humHysteresis, 0.0F);
+  humMax = targetHum;
+  humMin = constrain(targetHum - humHysteresis, kHumLowerLimit, targetHum);
+  humHysteresis = targetHum - humMin;
+}
+
 void ensurePreferences() {
   if (!prefsReady) {
     prefsReady = prefs.begin(kPrefsNamespace, false);
@@ -141,6 +228,13 @@ void saveRanges() {
   prefs.putFloat("tempMax", tempMax);
   prefs.putFloat("humMin", humMin);
   prefs.putFloat("humMax", humMax);
+  prefs.putFloat("targetTemp", targetTemp);
+  prefs.putFloat("targetHum", targetHum);
+  prefs.putFloat("tempHyst", tempHysteresis);
+  prefs.putFloat("humHyst", humHysteresis);
+  if (!suppressRetainedSettingsPublish) {
+    publishRetainedSettingsState();
+  }
 }
 
 void loadRanges() {
@@ -161,12 +255,22 @@ void loadRanges() {
   tempMax = storedTempMax;
   humMin = storedHumMin;
   humMax = storedHumMax;
+  targetTemp = constrain(prefs.getFloat("targetTemp", tempMin), kTempLowerLimit, kTempUpperLimit);
+  targetHum = constrain(prefs.getFloat("targetHum", humMax), kHumLowerLimit, kHumUpperLimit);
+  tempHysteresis = prefs.getFloat("tempHyst", max(tempMax - targetTemp, 0.0F));
+  humHysteresis = prefs.getFloat("humHyst", max(targetHum - humMin, 0.0F));
+  syncTempRangeFromTarget();
+  syncHumRangeFromTarget();
 }
 
 void loadDeviceId() {
   ensurePreferences();
-  if (!prefsReady) {
-    deviceId = MQTT_DEVICE_ID;
+  const String configuredDeviceId = String(MQTT_DEVICE_ID);
+  if (configuredDeviceId.length() > 0) {
+    deviceId = configuredDeviceId;
+    if (prefsReady) {
+      prefs.putString(kDeviceIdKey, deviceId);
+    }
     return;
   }
 
@@ -272,16 +376,7 @@ void publishDeviceState(float temp, float hum) {
   publishRetained("curing/status", "online");
   publishRetained("curing/temp", String(temp, 1));
   publishRetained("curing/humidity", String(hum, 1));
-  publishRetained("curing/set/temp_min", String(tempMin, 1));
-  publishRetained("curing/set/temp_max", String(tempMax, 1));
-  publishRetained("curing/set/hum_min", String(humMin, 0));
-  publishRetained("curing/set/hum_max", String(humMax, 0));
-  publishRetained("curing/set/temp", String(getTargetTemp(), 1));
-  publishRetained("curing/set/hum", String(getTargetHum(), 1));
-  publishRetained("curing/set/hysteresis", String(getHysteresis(), 1));
-  publishRetained("curing/set/air_time", String(getAirTime(), 1));
-  publishRetained("curing/set/air_interval", String(getAirInterval(), 1));
-  publishRetained("curing/set/profile", getProfile());
+  publishRetainedSettingsState();
   publishControlState();
   publishRetained("curing/device/id", deviceId);
   publishRetained("curing/device/ip", String(getLocalIp()));
@@ -298,15 +393,17 @@ unsigned long lastReconnectAttempt = 0;
 
 void setTempRange(float minValue, float maxValue) {
   normalizeTempRange(&minValue, &maxValue);
-  tempMin = minValue;
-  tempMax = maxValue;
+  targetTemp = minValue;
+  tempHysteresis = max(maxValue - minValue, 0.0F);
+  syncTempRangeFromTarget();
   saveRanges();
 }
 
 void setHumRange(float minValue, float maxValue) {
   normalizeHumRange(&minValue, &maxValue);
-  humMin = minValue;
-  humMax = maxValue;
+  targetHum = maxValue;
+  humHysteresis = max(maxValue - minValue, 0.0F);
+  syncHumRangeFromTarget();
   saveRanges();
 }
 
@@ -343,21 +440,36 @@ float getHumMax() {
 }
 
 void setTargetTemp(float value) {
-  const float halfSpan = (tempMax - tempMin) * 0.5F;
-  setTempRange(value - halfSpan, value + halfSpan);
+  targetTemp = constrain(value, kTempLowerLimit, kTempUpperLimit);
+  syncTempRangeFromTarget();
+  saveRanges();
 }
 
 void setTargetHum(float value) {
-  const float halfSpan = (humMax - humMin) * 0.5F;
-  setHumRange(value - halfSpan, value + halfSpan);
+  targetHum = constrain(value, kHumLowerLimit, kHumUpperLimit);
+  syncHumRangeFromTarget();
+  saveRanges();
+}
+
+void setTempHysteresis(float value) {
+  tempHysteresis = max(value, 0.0F);
+  syncTempRangeFromTarget();
+  saveRanges();
+}
+
+void setHumHysteresis(float value) {
+  humHysteresis = max(value, 0.0F);
+  syncHumRangeFromTarget();
+  saveRanges();
 }
 
 void setHysteresis(float value) {
   const float safeValue = max(0.0F, value);
-  const float tempCenter = getTargetTemp();
-  const float humCenter = getTargetHum();
-  setTempRange(tempCenter - safeValue, tempCenter + safeValue);
-  setHumRange(humCenter - safeValue, humCenter + safeValue);
+  tempHysteresis = safeValue;
+  humHysteresis = safeValue;
+  syncTempRangeFromTarget();
+  syncHumRangeFromTarget();
+  saveRanges();
 }
 
 void setAirTime(float value) {
@@ -443,6 +555,10 @@ void callback(char* topic, byte* payload, unsigned int length) {
   String t = String(topic);
   t = logicalTopicFromScoped(t);
 
+  if (t.startsWith("curing/set/") && shouldIgnoreSettingEcho(t, msg)) {
+    return;
+  }
+
   if (t == "control/cool") {
     bool enabled = false;
     bool state = false;
@@ -501,16 +617,24 @@ void callback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  if (t == "curing/set/temp") setTargetTemp(msg.toFloat());
-  if (t == "curing/set/hum") setTargetHum(msg.toFloat());
-  if (t == "curing/set/temp_min") setTempMin(msg.toFloat());
-  if (t == "curing/set/temp_max") setTempMax(msg.toFloat());
-  if (t == "curing/set/hum_min") setHumMin(msg.toFloat());
-  if (t == "curing/set/hum_max") setHumMax(msg.toFloat());
-  if (t == "curing/set/hysteresis") setHysteresis(msg.toFloat());
-  if (t == "curing/set/air_time") setAirTime(msg.toFloat());
-  if (t == "curing/set/air_interval") setAirInterval(msg.toFloat());
-  if (t == "curing/set/profile") setProfile(msg);
+  if (t.startsWith("curing/set/")) {
+    if (msg.length() == 0) {
+      return;
+    }
+
+    suppressRetainedSettingsPublish = true;
+
+    if (t == "curing/set/temp") setTargetTemp(msg.toFloat());
+    if (t == "curing/set/hum") setTargetHum(msg.toFloat());
+    if (t == "curing/set/temp_hysteresis") setTempHysteresis(msg.toFloat());
+    if (t == "curing/set/hum_hysteresis") setHumHysteresis(msg.toFloat());
+    if (t == "curing/set/air_time") setAirTime(msg.toFloat());
+    if (t == "curing/set/air_interval") setAirInterval(msg.toFloat());
+    if (t == "curing/set/profile") setProfile(msg);
+
+    suppressRetainedSettingsPublish = false;
+    return;
+  }
 }
 
 void reconnect() {
@@ -524,20 +648,22 @@ void reconnect() {
 
   lastReconnectAttempt = millis();
   const String statusTopic = scopedTopic("curing/status");
-    const String clientId = String(MQTT_CLIENT_ID) + "-" + deviceId;
+  const String clientId = String(MQTT_CLIENT_ID) + "-" + deviceId;
   if (client.connect(
       clientId.c_str(),
-          MQTT_USERNAME,
-          MQTT_PASSWORD,
-          statusTopic.c_str(),
-          0,
-          true,
-          "offline")) {
+      MQTT_USERNAME,
+      MQTT_PASSWORD,
+      statusTopic.c_str(),
+      0,
+      true,
+      "offline")) {
+    client.publish(statusTopic.c_str(), "online", true);
+    publishRetainedSettingsState();
+    publishControlState();
     const String commandTopic = scopedTopic("curing/set/#");
     const String controlTopic = scopedTopic("control/#");
     client.subscribe(commandTopic.c_str());
     client.subscribe(controlTopic.c_str());
-    client.publish(statusTopic.c_str(), "online", true);
   }
 }
 
@@ -558,15 +684,23 @@ void publishData(float temp, float hum) {
 }
 
 float getTargetTemp() {
-  return (tempMin + tempMax) * 0.5F;
+  return targetTemp;
 }
 
 float getTargetHum() {
-  return (humMin + humMax) * 0.5F;
+  return targetHum;
+}
+
+float getTempHysteresis() {
+  return tempHysteresis;
+}
+
+float getHumHysteresis() {
+  return humHysteresis;
 }
 
 float getHysteresis() {
-  return (tempMax - tempMin) * 0.5F;
+  return tempHysteresis;
 }
 
 float getAirTime() {

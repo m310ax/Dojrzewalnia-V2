@@ -14,6 +14,16 @@ constexpr float kMinKp = 0.5F;
 constexpr float kMaxKp = 5.0F;
 constexpr float kHumDeadband = 1.0F;
 constexpr unsigned long kControlIntervalMs = 2000UL;
+#ifdef COOLING_MIN_ON_MS
+constexpr unsigned long kCoolingMinOnMs = COOLING_MIN_ON_MS;
+#else
+constexpr unsigned long kCoolingMinOnMs = 120000UL;
+#endif
+#ifdef COOLING_MIN_OFF_MS
+constexpr unsigned long kCoolingMinOffMs = COOLING_MIN_OFF_MS;
+#else
+constexpr unsigned long kCoolingMinOffMs = 180000UL;
+#endif
 constexpr unsigned long kFanIntervalMs = 300000UL;
 constexpr unsigned long kFanDurationMs = 30000UL;
 constexpr unsigned long kHumMinIntervalMs = 60000UL;
@@ -24,18 +34,47 @@ constexpr float kIntegralLimit = 1000.0F;
 float integral = 0.0F;
 float lastError = 0.0F;
 float lastHumSample = 0.0F;
+float lastCoolingTarget = NAN;
+float lastCoolingHysteresis = NAN;
 unsigned long lastControl = 0;
 unsigned long lastMeasure = 0;
 unsigned long lastFanRun = 0;
 unsigned long lastHumStart = 0;
+unsigned long coolingLastOn = 0;
+unsigned long coolingLastOff = 0;
 unsigned long fanStart = 0;
 unsigned long humStart = 0;
 unsigned long humDuration = 0;
 bool fanState = false;
 bool humState = false;
+bool coolingState = false;
+bool coolingPullDownActive = false;
 
 void setRelayState(uint8_t pin, bool enabled) {
-  digitalWrite(pin, enabled ? HIGH : LOW);
+  digitalWrite(pin, enabled ? LOW : HIGH);
+}
+
+bool canStartCooling(unsigned long now) {
+  return !coolingState && (coolingLastOff == 0 || now - coolingLastOff >= kCoolingMinOffMs);
+}
+
+bool canStopCooling(unsigned long now) {
+  return coolingState && (coolingLastOn == 0 || now - coolingLastOn >= kCoolingMinOnMs);
+}
+
+void setCoolingRelayState(unsigned long now, bool enabled) {
+  if (coolingState == enabled) {
+    return;
+  }
+
+  coolingState = enabled;
+  setRelayState(RELAY_COOL, enabled);
+
+  if (enabled) {
+    coolingLastOn = now;
+  } else {
+    coolingLastOff = now;
+  }
 }
 
 void stopHumPulse() {
@@ -53,7 +92,7 @@ void stopFanCycle(unsigned long now) {
 }
 
 void enterFailSafe(unsigned long now) {
-  setRelayState(RELAY_COOL, false);
+  setCoolingRelayState(now, false);
   stopHumPulse();
   stopFanCycle(now);
   integral = 0.0F;
@@ -109,6 +148,9 @@ void initRelays() {
   pinMode(RELAY_HUM, OUTPUT);
   pinMode(RELAY_FAN, OUTPUT);
 
+  coolingState = false;
+  coolingLastOn = 0;
+  coolingLastOff = 0;
   setRelayState(RELAY_COOL, false);
   setRelayState(RELAY_HUM, false);
   setRelayState(RELAY_FAN, false);
@@ -125,11 +167,36 @@ void controlLogic(float temp, float hum) {
   }
 
   if (isCoolOverrideEnabled()) {
-    setRelayState(RELAY_COOL, getCoolOverrideState());
-  } else if (temp > getTempMax()) {
-    setRelayState(RELAY_COOL, true);
-  } else if (temp < getTempMin()) {
-    setRelayState(RELAY_COOL, false);
+    setCoolingRelayState(now, getCoolOverrideState());
+  } else {
+    const float targetTemp = getTargetTemp();
+    const float tempHysteresis = getTempHysteresis();
+    const bool targetChanged = !isfinite(lastCoolingTarget) || !isfinite(lastCoolingHysteresis)
+        || fabsf(lastCoolingTarget - targetTemp) > 0.01F
+        || fabsf(lastCoolingHysteresis - tempHysteresis) > 0.01F;
+
+    if (targetChanged) {
+      coolingPullDownActive = temp > targetTemp;
+      lastCoolingTarget = targetTemp;
+      lastCoolingHysteresis = tempHysteresis;
+    }
+
+    if (coolingPullDownActive) {
+      if (temp <= targetTemp && canStopCooling(now)) {
+        coolingPullDownActive = false;
+        setCoolingRelayState(now, false);
+      } else if (canStartCooling(now)) {
+        setCoolingRelayState(now, true);
+      }
+    } else {
+      const float tempOnThreshold = targetTemp + tempHysteresis;
+      const float tempOffThreshold = targetTemp;
+      if (temp >= tempOnThreshold && canStartCooling(now)) {
+        setCoolingRelayState(now, true);
+      } else if (temp <= tempOffThreshold && canStopCooling(now)) {
+        setCoolingRelayState(now, false);
+      }
+    }
   }
 
   if (isHumOverrideEnabled()) {
@@ -155,34 +222,17 @@ void controlLogic(float temp, float hum) {
       : static_cast<float>(now - lastControl) / 1000.0F;
   lastControl = now;
 
-  autoTunePID(hum, now);
-
   if (!isHumOverrideEnabled()) {
-    const float target = (getHumMin() + getHumMax()) * 0.5F;
-    const float error = target - hum;
+    const float humOnThreshold = getTargetHum() - getHumHysteresis();
+    const float humOffThreshold = getTargetHum();
 
-    if (hum > getHumMax()) {
-      integral *= 0.5F;
-    }
-
-    if (abs(error) < kHumDeadband) {
-      lastError = error;
-      humDuration = 0;
-      return;
-    }
-
-    integral = constrain(integral + error * elapsedSeconds, -kIntegralLimit, kIntegralLimit);
-    const float derivative = elapsedSeconds > 0.0F ? (error - lastError) / elapsedSeconds : 0.0F;
-    const float output = kp * error + kKi * integral + kKd * derivative;
-    lastError = error;
-
-    humDuration = constrain(static_cast<int>(output * 100.0F), 0, static_cast<int>(kHumMaxPulseMs));
-
-    if (!humState && humDuration >= kHumMinPulseMs && now - lastHumStart >= kHumMinIntervalMs) {
+    if (hum <= humOnThreshold) {
       setRelayState(RELAY_HUM, true);
       humState = true;
       humStart = now;
-      lastHumStart = now;
+      humDuration = kControlIntervalMs + 250UL;
+    } else if (hum >= humOffThreshold) {
+      stopHumPulse();
     }
   }
 }

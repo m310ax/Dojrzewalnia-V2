@@ -5,18 +5,17 @@
 // gestures. You can also use WidgetTester to find child widgets in the widget
 // tree, read text, and verify that the values of widget properties are correct.
 
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:curing_app/auth_service.dart';
 import 'package:curing_app/main.dart';
 
 void main() {
-  testWidgets('renders curing dashboard shell', (WidgetTester tester) async {
-    await tester.pumpWidget(const MyApp(enableAutoConnect: false));
+  testWidgets('renders login shell', (WidgetTester tester) async {
+    AuthService().token = null;
+    await tester.pumpWidget(const MyApp());
 
-    expect(find.text('Dojrzewalnia'), findsOneWidget);
-    expect(find.text('Panel dojrzewalni'), findsOneWidget);
-    expect(find.widgetWithText(FilledButton, 'Połącz'), findsOneWidget);
-    expect(find.text('Lodówka'), findsOneWidget);
+    expect(find.text('Dojrzewalnia PRO'), findsOneWidget);
+    expect(find.text('Zaloguj'), findsOneWidget);
   });
 }

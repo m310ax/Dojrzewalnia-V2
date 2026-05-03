@@ -6,6 +6,7 @@
 
 namespace {
 volatile bool otaInProgress = false;
+volatile bool manualHttpOtaRequested = false;
 unsigned long lastOtaProgressLog = 0;
 unsigned long lastHttpOtaCheck = 0;
 
@@ -136,11 +137,16 @@ void handleOTA() {
 }
 
 void checkHttpOta() {
+  const bool forceCheck = manualHttpOtaRequested;
+  if (forceCheck) {
+    manualHttpOtaRequested = false;
+  }
+
   if (WiFi.status() != WL_CONNECTED || otaInProgress) {
     return;
   }
 
-  if (millis() - lastHttpOtaCheck < OTA_CHECK_INTERVAL_MS) {
+  if (!forceCheck && lastHttpOtaCheck != 0 && millis() - lastHttpOtaCheck < OTA_CHECK_INTERVAL_MS) {
     return;
   }
   lastHttpOtaCheck = millis();
@@ -170,6 +176,14 @@ void checkHttpOta() {
       OTA_FIRMWARE_VERSION,
       remoteVersion.c_str());
   performHttpFirmwareUpdate();
+}
+
+void requestHttpOtaCheck() {
+  manualHttpOtaRequested = true;
+}
+
+bool isHttpOtaCheckPending() {
+  return manualHttpOtaRequested;
 }
 
 bool isOtaInProgress() {

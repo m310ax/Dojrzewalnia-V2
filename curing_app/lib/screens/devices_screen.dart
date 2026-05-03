@@ -12,71 +12,50 @@ class DevicesScreen extends StatefulWidget {
 }
 
 class _DevicesScreenState extends State<DevicesScreen> {
-  List<String> discovered = [];
-  bool loading = true;
+  List<DeviceInfo> _devices = const [];
+  bool _loading = true;
 
   @override
   void initState() {
     super.initState();
-    load();
+    _load();
   }
 
-  Future<void> load() async {
+  Future<void> _load() async {
     try {
-      final d = await widget.api.getDiscovered();
+      final devices = await widget.api.getDevices();
       if (!mounted) {
         return;
       }
       setState(() {
-        discovered = d;
-        loading = false;
+        _devices = devices;
+        _loading = false;
       });
-    } catch (error) {
+    } catch (_) {
       if (!mounted) {
         return;
       }
-      setState(() => loading = false);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(error.toString())));
+      setState(() => _loading = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Wykryte ESP')),
-      body: loading
+      appBar: AppBar(title: const Text('Urzadzenia')),
+      body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : RefreshIndicator(
-              onRefresh: load,
-              child: ListView(
-                padding: const EdgeInsets.all(16),
-                children: discovered.isEmpty
-                    ? const [
-                        Padding(
-                          padding: EdgeInsets.only(top: 32),
-                          child: Center(child: Text('Brak wykrytych urządzeń')),
-                        ),
-                      ]
-                    : discovered.map((id) {
-                        return Card(
-                          child: ListTile(
-                            title: Text(id),
-                            trailing: ElevatedButton(
-                              child: const Text('Dodaj'),
-                              onPressed: () async {
-                                await widget.api.addDevice(id);
-                                if (!context.mounted) {
-                                  return;
-                                }
-                                Navigator.pop(context, id);
-                              },
-                            ),
-                          ),
-                        );
-                      }).toList(),
-              ),
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                for (final device in _devices)
+                  Card(
+                    child: ListTile(
+                      title: Text(device.name),
+                      subtitle: Text(device.id),
+                    ),
+                  ),
+              ],
             ),
     );
   }

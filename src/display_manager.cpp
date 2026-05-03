@@ -15,8 +15,6 @@ bool displayReady = false;
 unsigned long lastRefresh = 0;
 
 constexpr int kCompactFontBaselineOffset = 6;
-constexpr unsigned long kStatusPageDurationMs = 4000;
-
 #if DISPLAY_LAYOUT_24
 constexpr int kDisplayLeftPadding = 2;
 constexpr int kBootTitleY = 4;
@@ -37,12 +35,6 @@ constexpr int kStatusLabel2Y = 22;
 constexpr int kStatusValue2Y = 30;
 constexpr int kStatusLabel3Y = 42;
 constexpr int kStatusValue3Y = 50;
-constexpr char kTemperatureFormat[] = "Temperatura: %.1fC";
-constexpr char kHumidityFormat[] = "Wilgotność: %.1f%%";
-constexpr char kTemperatureRangeFormat[] = "Temperatura zadana: %.1f..%.1fC";
-constexpr char kHumidityRangeFormat[] = "Wilgotność zadana: %.0f..%.0f%%";
-constexpr char kWifiOnlineText[] = "Stan połączenia WiFi: OK";
-constexpr char kWifiOfflineText[] = "Stan połączenia WiFi: OFF";
 #else
 constexpr int kDisplayLeftPadding = 0;
 constexpr int kBootTitleY = 0;
@@ -57,12 +49,6 @@ constexpr int kStatusTempRangeY = 20;
 constexpr int kStatusHumidityRangeY = 30;
 constexpr int kStatusWifiY = 40;
 constexpr int kStatusIpY = 50;
-constexpr char kTemperatureFormat[] = "Temperatura: %.1fC";
-constexpr char kHumidityFormat[] = "Wilgotność: %.1f%%";
-constexpr char kTemperatureRangeFormat[] = "Zakres T: %.1f-%.1fC";
-constexpr char kHumidityRangeFormat[] = "Zakres H: %.0f-%.0f%%";
-constexpr char kWifiOnlineText[] = "WiFi połączone";
-constexpr char kWifiOfflineText[] = "WiFi offline";
 #endif
 
 constexpr int kCompactEllipsisDots = 3;
@@ -309,7 +295,7 @@ bool drawPolishGlyph(int x, int y, uint16_t codepoint, int textSize) {
 }
 
 void writeLine(int x, int y, const char* text, int textSize = 1) {
-  if (textSize == 1) {
+  if (textSize == 0) {
     int cursorX = x;
     const uint8_t* bytes = reinterpret_cast<const uint8_t*>(text);
     const int lineRightEdge = OLED_WIDTH;
@@ -416,6 +402,66 @@ void showStatusPair(int labelY, int valueY, const char* label, const char* value
   writeLine(kDisplayLeftPadding, labelY, label, 1);
   writeLine(kDisplayLeftPadding, valueY, value, 1);
 }
+
+void drawWifiIcon(int x, int y, bool connected) {
+  display.drawCircle(x + 4, y + 7, 4, SH110X_WHITE);
+  display.drawCircle(x + 4, y + 7, 2, SH110X_WHITE);
+  display.fillRect(x + 3, y + 7, 2, 2, SH110X_WHITE);
+  if (!connected) {
+    display.drawLine(x, y + 11, x + 8, y + 3, SH110X_WHITE);
+  }
+}
+
+void drawServerIcon(int x, int y, bool connected) {
+  display.drawRoundRect(x, y + 1, 10, 6, 1, SH110X_WHITE);
+  display.drawRoundRect(x, y + 8, 10, 6, 1, SH110X_WHITE);
+  if (connected) {
+    display.fillRect(x + 7, y + 3, 2, 2, SH110X_WHITE);
+    display.fillRect(x + 7, y + 10, 2, 2, SH110X_WHITE);
+  } else {
+    display.drawLine(x + 1, y + 12, x + 9, y + 2, SH110X_WHITE);
+  }
+}
+
+void drawAppIcon(int x, int y, bool connected) {
+  display.drawRoundRect(x + 1, y, 8, 13, 2, SH110X_WHITE);
+  display.drawFastHLine(x + 3, y + 2, 4, SH110X_WHITE);
+  display.drawPixel(x + 5, y + 10, SH110X_WHITE);
+  if (!connected) {
+    display.drawLine(x, y + 12, x + 10, y + 1, SH110X_WHITE);
+  }
+}
+
+void drawStatusIcons(bool wifiConnected, bool mqttConnected, bool appConnected) {
+  const int appX = OLED_WIDTH - 10;
+  const int mqttX = appX - 12;
+  const int wifiX = mqttX - 12;
+  drawWifiIcon(wifiX, 0, wifiConnected);
+  drawServerIcon(mqttX, 0, mqttConnected);
+  drawAppIcon(appX, 0, appConnected);
+}
+
+void drawBandDivider(int y) {
+  display.drawFastHLine(2, y, OLED_WIDTH - 4, SH110X_WHITE);
+}
+
+void drawTargetMini(int x, int y, const char* value) {
+  writeLine(x, y, "CEL", 1);
+  writeLine(x, y + 10, value, 1);
+}
+
+void drawMetricBand(
+    int y,
+    const char* label,
+    const char* currentValue,
+    const char* targetValue,
+    const char* unit) {
+  writeLine(4, y, label, 1);
+  writeLine(4, y + 11, currentValue, 2);
+  writeLine(58, y + 15, unit, 1);
+  display.drawFastVLine(80, y + 1, 20, SH110X_WHITE);
+  drawTargetMini(89, y + 1, targetValue);
+}
 }
 
 void initDisplay() {
@@ -453,56 +499,39 @@ void updateDisplay(float temp, float hum) {
     return;
   }
 
-  char buffer[48];
+  char tempCurrent[16];
+  char tempTarget[16];
+  char tempHysteresis[16];
+  char humCurrent[16];
+  char humTarget[16];
+  char humHysteresis[16];
 
   display.clearDisplay();
 
-#if DISPLAY_LAYOUT_24
-  const bool showPrimaryPage = ((millis() / kStatusPageDurationMs) % 2) == 0;
+  snprintf(tempCurrent, sizeof(tempCurrent), "%.1fC", temp);
+  snprintf(tempTarget, sizeof(tempTarget), "%.1fC", getTargetTemp());
+  snprintf(tempHysteresis, sizeof(tempHysteresis), "%.1fC", getTempHysteresis());
+  snprintf(humCurrent, sizeof(humCurrent), "%.0f%%", hum);
+  snprintf(humTarget, sizeof(humTarget), "%.0f%%", getTargetHum());
+  snprintf(humHysteresis, sizeof(humHysteresis), "%.1f%%", getHumHysteresis());
 
-  if (showPrimaryPage) {
-    snprintf(buffer, sizeof(buffer), "%.1fC", temp);
-    showStatusPair(kStatusLabel1Y, kStatusValue1Y, "Temperatura", buffer);
+  writeLine(2, 2, "Temperatura", 1);
+  writeLine(66, 2, "Wilgotnosc", 1);
 
-    snprintf(buffer, sizeof(buffer), "%.1f%%", hum);
-    showStatusPair(kStatusLabel2Y, kStatusValue2Y, "Wilgotność", buffer);
+  writeLine(2, 12, tempCurrent, 2);
+  writeLine(66, 12, humCurrent, 2);
 
-    snprintf(buffer, sizeof(buffer), "%s", getLocalIp());
-    showStatusPair(kStatusLabel3Y, kStatusValue3Y, "IP", buffer);
-  } else {
-    snprintf(buffer, sizeof(buffer), "%.1f..%.1fC", getTempMin(), getTempMax());
-    showStatusPair(kStatusLabel1Y, kStatusValue1Y, "Temperatura zadana", buffer);
+  display.drawFastVLine(63, 2, OLED_HEIGHT - 4, SH110X_WHITE);
 
-    snprintf(buffer, sizeof(buffer), "%.0f..%.0f%%", getHumMin(), getHumMax());
-    showStatusPair(kStatusLabel2Y, kStatusValue2Y, "Wilgotność zadana", buffer);
+  writeLine(2, 32, "Zadana", 1);
+  writeLine(2, 40, tempTarget, 1);
+  writeLine(2, 48, "Histereza", 1);
+  writeLine(2, 56, tempHysteresis, 1);
 
-    showStatusPair(
-        kStatusLabel3Y,
-        kStatusValue3Y,
-        "Stan połączenia WiFi",
-        isWiFiConnected() ? "OK" : "OFF");
-  }
-
-  display.display();
-  return;
-#endif
-
-  snprintf(buffer, sizeof(buffer), kTemperatureFormat, temp);
-  writeLine(kDisplayLeftPadding, kStatusTempY, buffer, 1);
-
-  snprintf(buffer, sizeof(buffer), kHumidityFormat, hum);
-  writeLine(kDisplayLeftPadding, kStatusHumidityY, buffer, 1);
-
-  snprintf(buffer, sizeof(buffer), kTemperatureRangeFormat, getTempMin(), getTempMax());
-  writeLine(kDisplayLeftPadding, kStatusTempRangeY, buffer, 1);
-
-  snprintf(buffer, sizeof(buffer), kHumidityRangeFormat, getHumMin(), getHumMax());
-  writeLine(kDisplayLeftPadding, kStatusHumidityRangeY, buffer, 1);
-
-  writeLine(kDisplayLeftPadding, kStatusWifiY, isWiFiConnected() ? kWifiOnlineText : kWifiOfflineText, 1);
-
-  snprintf(buffer, sizeof(buffer), "IP: %s", getLocalIp());
-  writeLine(kDisplayLeftPadding, kStatusIpY, buffer, 1);
+  writeLine(66, 32, "Zadana", 1);
+  writeLine(66, 40, humTarget, 1);
+  writeLine(66, 48, "Histereza", 1);
+  writeLine(66, 56, humHysteresis, 1);
 
   display.display();
 }

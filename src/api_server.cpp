@@ -60,7 +60,7 @@ const uint8_t kPwaIcon[] PROGMEM = {
 };
 
 bool relayOn(int pin) {
-  return digitalRead(pin) == HIGH;
+  return digitalRead(pin) == LOW;
 }
 
 String jsonNumber(float value, int decimals = 1) {
@@ -500,6 +500,8 @@ String buildStatusPayload() {
   payload += "\"humMax\":" + jsonNumber(getHumMax()) + ",";
   payload += "\"targetTemp\":" + jsonNumber(getTargetTemp()) + ",";
   payload += "\"targetHum\":" + jsonNumber(getTargetHum()) + ",";
+  payload += "\"tempHysteresis\":" + jsonNumber(getTempHysteresis()) + ",";
+  payload += "\"humHysteresis\":" + jsonNumber(getHumHysteresis()) + ",";
   payload += "\"hysteresis\":" + jsonNumber(getHysteresis()) + ",";
   payload += "\"airTime\":" + jsonNumber(getAirTime()) + ",";
   payload += "\"airInterval\":" + jsonNumber(getAirInterval()) + ",";
@@ -557,6 +559,12 @@ void applyControlArgs() {
   }
   if (server.hasArg("hum")) {
     setTargetHum(server.arg("hum").toFloat());
+  }
+  if (server.hasArg("temp_hysteresis")) {
+    setTempHysteresis(server.arg("temp_hysteresis").toFloat());
+  }
+  if (server.hasArg("hum_hysteresis")) {
+    setHumHysteresis(server.arg("hum_hysteresis").toFloat());
   }
   if (server.hasArg("humMin")) {
     setHumMin(server.arg("humMin").toFloat());
@@ -624,6 +632,24 @@ void handleProfile() {
 
   server.send(200, "text/plain", "OK");
 }
+
+void handleOtaTrigger() {
+  if (!ensureAuthorized()) {
+    return;
+  }
+
+  markAppContact();
+  requestHttpOtaCheck();
+
+  String payload = "{";
+  payload += "\"ok\":true,";
+  payload += "\"queued\":true,";
+  payload += "\"otaInProgress\":" + String(isOtaInProgress() ? "true" : "false") + ",";
+  payload += "\"otaCheckPending\":" + String(isHttpOtaCheckPending() ? "true" : "false") + ",";
+  payload += "\"currentVersion\":\"" + String(OTA_FIRMWARE_VERSION) + "\"";
+  payload += "}";
+  server.send(200, "application/json", payload);
+}
 }
 
 void setupApiServer() {
@@ -636,6 +662,8 @@ void setupApiServer() {
   server.on("/icon.png", HTTP_GET, handleIcon);
   server.on("/profile", HTTP_GET, handleProfile);
   server.on("/api/status", HTTP_GET, handleStatus);
+  server.on("/api/ota", HTTP_POST, handleOtaTrigger);
+  server.on("/api/ota", HTTP_GET, handleOtaTrigger);
   server.on("/api/control", HTTP_POST, handleControl);
   server.on("/api/control", HTTP_GET, handleControl);
   server.begin();

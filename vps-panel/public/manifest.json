@@ -1,0 +1,15 @@
+{
+  "name": "Dojrzewalnia",
+  "short_name": "Dojrzewalnia",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f3f0ea",
+  "theme_color": "#184c43",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

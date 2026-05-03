@@ -1,4 +1,4 @@
-# Dojrzewalnia-V2 1.0.2
+# Dojrzewalnia 1.0.2
 
 Data wydania: 2026-04-26
 
@@ -18,3 +18,7 @@ Data wydania: 2026-04-26
 
 - flutter analyze dla zmienionych plików zakończył się bez błędów.
 - Lokalny test backendu potwierdził poprawne działanie rejestracji i logowania.
+
+## Uwaga
+
+Notatka dotyczy historycznego wydania sprzed spłaszczenia repo do jednego katalogu roboczego.

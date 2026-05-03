@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 
 import 'api_service.dart';
-import 'device_provider.dart';
 
 class DeviceSelector extends StatefulWidget {
   const DeviceSelector({super.key, this.onChanged});
@@ -14,103 +12,64 @@ class DeviceSelector extends StatefulWidget {
 }
 
 class _DeviceSelectorState extends State<DeviceSelector> {
-  final api = ApiService();
+  final _api = ApiService();
 
-  List<Map<String, dynamic>> devices = [];
-  bool loading = true;
+  List<DeviceInfo> _devices = const [];
+  String? _selected;
 
   @override
   void initState() {
     super.initState();
-    loadDevices();
+    _load();
   }
 
-  Future<void> loadDevices() async {
+  Future<void> _load() async {
     try {
-      final result = await api.getDevices();
+      final devices = await _api.getDevices();
       if (!mounted) {
         return;
       }
-
       setState(() {
-        devices = result;
-        loading = false;
+        _devices = devices;
+        _selected = devices.isEmpty ? null : devices.first.id;
       });
-
-      _ensureSelection(result);
+      if (_selected != null) {
+        widget.onChanged?.call(_selected!);
+      }
     } catch (_) {
       if (!mounted) {
         return;
       }
-      setState(() => loading = false);
-    }
-  }
-
-  void _ensureSelection(List<Map<String, dynamic>> loadedDevices) {
-    final provider = context.read<DeviceProvider>();
-
-    if (loadedDevices.isEmpty) {
-      provider.setDevice(null);
-      return;
-    }
-
-    final ids = loadedDevices
-        .map((device) => device['id']?.toString() ?? '')
-        .where((id) => id.isNotEmpty)
-        .toSet();
-    final currentId = provider.selectedDeviceId;
-    final fallbackId = currentId != null && ids.contains(currentId)
-        ? currentId
-        : loadedDevices.first['id']?.toString();
-
-    if (fallbackId != null && fallbackId.isNotEmpty && currentId != fallbackId) {
-      provider.setDevice(fallbackId);
-      widget.onChanged?.call(fallbackId);
+      setState(() {
+        _devices = const [];
+        _selected = null;
+      });
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final provider = context.watch<DeviceProvider>();
-
-    if (loading) {
-      return const Center(child: CircularProgressIndicator());
+    if (_devices.isEmpty) {
+      return const Text('Brak urzadzen');
     }
-
-    if (devices.isEmpty) {
-      return const Text('Brak urządzeń');
-    }
-
-    final availableIds = devices
-        .map((device) => device['id']?.toString() ?? '')
-        .where((id) => id.isNotEmpty)
-        .toSet();
-    final selectedId = provider.selectedDeviceId != null &&
-            availableIds.contains(provider.selectedDeviceId)
-        ? provider.selectedDeviceId
-        : devices.first['id']?.toString();
 
     return DropdownButtonFormField<String>(
-      key: ValueKey(selectedId),
-      initialValue: selectedId,
-      isExpanded: true,
-      decoration: const InputDecoration(hintText: 'Wybierz urządzenie'),
-      items: devices.map((device) {
-        final deviceId = device['id']?.toString() ?? '';
-        final deviceName = device['name']?.toString() ?? deviceId;
-        return DropdownMenuItem<String>(
-          value: deviceId,
-          child: Text(deviceName),
-        );
-      }).toList(),
+      initialValue: _selected,
+      items: [
+        for (final device in _devices)
+          DropdownMenuItem<String>(
+            value: device.id,
+            child: Text(device.name),
+          ),
+      ],
       onChanged: (value) {
-        if (value == null || value.isEmpty) {
+        if (value == null) {
           return;
         }
-
-        provider.setDevice(value);
+        setState(() => _selected = value);
         widget.onChanged?.call(value);
       },
+      decoration: const InputDecoration(labelText: 'Urzadzenie'),
     );
   }
 }

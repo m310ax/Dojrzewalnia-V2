@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#184c43">
+    <title>Dojrzewalnia</title>
+    <link rel="manifest" href="/manifest.json">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <h1>Dojrzewalnia</h1>
+          <p id="updated">Czekam na dane...</p>
+        </div>
+        <div class="status-pills">
+          <span id="broker" class="pill off">MQTT</span>
+          <span id="alarm" class="pill off">Alarm</span>
+        </div>
+      </header>
+
+      <section class="metrics">
+        <article>
+          <span>Temperatura</span>
+          <strong id="temperature">--.-</strong>
+          <small>C</small>
+        </article>
+        <article>
+          <span>Wilgotnosc</span>
+          <strong id="humidity">--.-</strong>
+          <small>% RH</small>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="mode-row">
+          <button data-mode="auto">Auto</button>
+          <button data-mode="manual">Manual</button>
+          <button data-mode="pid">PID</button>
+        </div>
+        <div class="relay-grid">
+          <button data-relay="cooling">Chlodzenie</button>
+          <button data-relay="humidifier">Nawilzacz</button>
+          <button data-relay="dehumidifier">Osuszacz</button>
+          <button data-relay="fan">Wentylator</button>
+        </div>
+      </section>
+
+      <section class="panel chart-panel">
+        <div class="section-head">
+          <h2>Historia</h2>
+          <span>ostatnie pomiary</span>
+        </div>
+        <canvas id="chart" width="900" height="320"></canvas>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

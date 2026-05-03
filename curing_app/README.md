@@ -1,17 +1,25 @@
 # curing_app
 
-A new Flutter project.
+Aktualnie rozwijana aplikacja Flutter dla systemu Dojrzewalnia.
 
-## Getting Started
+## Zakres
 
-This project is a starting point for a Flutter application.
+Aplikacja sluzy do:
 
-A few resources to get you started if this is your first Flutter project:
+- logowania do backendu,
+- podgladu statusu urzadzenia,
+- zmiany trybu pracy,
+- podgladu historii pomiarow,
+- dalszej rozbudowy panelu mobilnego dla dojrzewalni.
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+## Uruchomienie lokalne
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+1. Przejdz do katalogu `curing_app`.
+2. Uruchom `flutter pub get`.
+3. Uruchom `flutter run` albo `flutter test`.
+
+Domyslnie aplikacja korzysta z backendu skonfigurowanego w kodzie projektu. Po scaleniu repo to jest jedyna aktywna aplikacja Flutter w workspace.
+
+## Testy
+
+Podstawowy test widgetu znajduje sie w `test/widget_test.dart`.

@@ -10,6 +10,12 @@ dependencies:
   flutter:
     sdk: flutter
   http: ^1.2.2
+  shared_preferences: ^2.3.2
+  fl_chart: ^0.68.0
+  google_fonts: ^6.2.1
+  mobile_scanner: ^6.0.2
+  path_provider: ^2.1.5
+  share_plus: ^10.1.4
 
 dev_dependencies:
   flutter_test:
