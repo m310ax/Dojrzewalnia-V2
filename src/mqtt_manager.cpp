@@ -94,48 +94,28 @@ bool parseBooleanMessage(const String& rawMessage, bool* value) {
   return false;
 }
 
-bool nearlyEqual(float left, float right, float epsilon = 0.05F) {
-  return fabsf(left - right) <= epsilon;
-}
-
-bool shouldIgnoreSettingEcho(const String& topic, const String& message) {
-  const float numericValue = message.toFloat();
-
-  if (topic == "curing/set/temp") {
-    return nearlyEqual(getTargetTemp(), numericValue);
-  }
-  if (topic == "curing/set/hum") {
-    return nearlyEqual(getTargetHum(), numericValue);
-  }
-  if (topic == "curing/set/temp_min") {
-    return nearlyEqual(tempMin, numericValue);
-  }
-  if (topic == "curing/set/temp_max") {
-    return nearlyEqual(tempMax, numericValue);
-  }
-  if (topic == "curing/set/hum_min") {
-    return nearlyEqual(humMin, numericValue);
-  }
-  if (topic == "curing/set/hum_max") {
-    return nearlyEqual(humMax, numericValue);
-  }
-  if (topic == "curing/set/temp_hysteresis") {
-    return nearlyEqual(getTempHysteresis(), numericValue);
-  }
-  if (topic == "curing/set/hum_hysteresis") {
-    return nearlyEqual(getHumHysteresis(), numericValue);
-  }
-  if (topic == "curing/set/air_time") {
-    return nearlyEqual(getAirTime(), numericValue);
-  }
-  if (topic == "curing/set/air_interval") {
-    return nearlyEqual(getAirInterval(), numericValue);
-  }
-  if (topic == "curing/set/profile") {
-    return getProfile() == message;
+bool parseFloatMessage(const String& rawMessage, float* value) {
+  String msg = rawMessage;
+  msg.trim();
+  if (msg.length() == 0) {
+    return false;
   }
 
-  return false;
+  char* endPtr = nullptr;
+  const float parsedValue = strtof(msg.c_str(), &endPtr);
+  if (endPtr == msg.c_str()) {
+    return false;
+  }
+
+  while (endPtr != nullptr && *endPtr != '\0') {
+    if (!isspace(static_cast<unsigned char>(*endPtr))) {
+      return false;
+    }
+    ++endPtr;
+  }
+
+  *value = parsedValue;
+  return true;
 }
 
 void publishControlState() {
@@ -555,10 +535,6 @@ void callback(char* topic, byte* payload, unsigned int length) {
   String t = String(topic);
   t = logicalTopicFromScoped(t);
 
-  if (t.startsWith("curing/set/") && shouldIgnoreSettingEcho(t, msg)) {
-    return;
-  }
-
   if (t == "control/cool") {
     bool enabled = false;
     bool state = false;
@@ -618,19 +594,57 @@ void callback(char* topic, byte* payload, unsigned int length) {
   }
 
   if (t.startsWith("curing/set/")) {
+    msg.trim();
     if (msg.length() == 0) {
       return;
     }
 
+    Serial.printf("MQTT setting received: %s = %s\n", t.c_str(), msg.c_str());
+
     suppressRetainedSettingsPublish = true;
 
-    if (t == "curing/set/temp") setTargetTemp(msg.toFloat());
-    if (t == "curing/set/hum") setTargetHum(msg.toFloat());
-    if (t == "curing/set/temp_hysteresis") setTempHysteresis(msg.toFloat());
-    if (t == "curing/set/hum_hysteresis") setHumHysteresis(msg.toFloat());
-    if (t == "curing/set/air_time") setAirTime(msg.toFloat());
-    if (t == "curing/set/air_interval") setAirInterval(msg.toFloat());
-    if (t == "curing/set/profile") setProfile(msg);
+    float numericValue = 0.0F;
+    const bool hasNumericValue = parseFloatMessage(msg, &numericValue);
+
+    if (t == "curing/set/temp") {
+      if (!hasNumericValue) {
+        Serial.printf("MQTT setting ignored, invalid float for %s: %s\n", t.c_str(), msg.c_str());
+      } else {
+        setTargetTemp(numericValue);
+      }
+    } else if (t == "curing/set/hum") {
+      if (!hasNumericValue) {
+        Serial.printf("MQTT setting ignored, invalid float for %s: %s\n", t.c_str(), msg.c_str());
+      } else {
+        setTargetHum(numericValue);
+      }
+    } else if (t == "curing/set/temp_hysteresis") {
+      if (!hasNumericValue) {
+        Serial.printf("MQTT setting ignored, invalid float for %s: %s\n", t.c_str(), msg.c_str());
+      } else {
+        setTempHysteresis(numericValue);
+      }
+    } else if (t == "curing/set/hum_hysteresis") {
+      if (!hasNumericValue) {
+        Serial.printf("MQTT setting ignored, invalid float for %s: %s\n", t.c_str(), msg.c_str());
+      } else {
+        setHumHysteresis(numericValue);
+      }
+    } else if (t == "curing/set/air_time") {
+      if (!hasNumericValue) {
+        Serial.printf("MQTT setting ignored, invalid float for %s: %s\n", t.c_str(), msg.c_str());
+      } else {
+        setAirTime(numericValue);
+      }
+    } else if (t == "curing/set/air_interval") {
+      if (!hasNumericValue) {
+        Serial.printf("MQTT setting ignored, invalid float for %s: %s\n", t.c_str(), msg.c_str());
+      } else {
+        setAirInterval(numericValue);
+      }
+    } else if (t == "curing/set/profile") {
+      setProfile(msg);
+    }
 
     suppressRetainedSettingsPublish = false;
     return;
